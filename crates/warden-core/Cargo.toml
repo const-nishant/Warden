@@ -1,0 +1,17 @@
+[package]
+name = "warden-core"
+version = "0.1.0"
+edition = "2024"
+description = "Shared types, errors, and protobuf-generated types for Warden"
+
+[dependencies]
+prost = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.13"

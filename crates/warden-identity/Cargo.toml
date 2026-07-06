@@ -1,0 +1,15 @@
+[package]
+name = "warden-identity"
+version = "0.1.0"
+edition = "2024"
+description = "Ed25519 keypair generation, PeerID derivation, signing"
+
+[dependencies]
+warden-core = { path = "../warden-core" }
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+bs58 = { workspace = true }
+rand = "0.8"
+tracing = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
