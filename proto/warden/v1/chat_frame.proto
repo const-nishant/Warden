@@ -1,0 +1,26 @@
+syntax = "proto3";
+package warden.v1;
+
+enum FrameType {
+  FRAME_TYPE_UNSPECIFIED = 0;
+  TEXT = 1;
+  ACK = 2;
+  RECEIPT = 3;
+  TYPING = 4;
+  KEY_ROTATE = 5;
+}
+
+message ChatFrame {
+  string message_id = 1;
+  string sender_peer_id = 2;
+  int64 timestamp_unix_ms = 3;
+  bytes ciphertext = 4;
+  bytes signature = 5;
+  FrameType frame_type = 6;
+}
+
+message PeerInfo {
+  string peer_id = 1;
+  bytes public_key = 2;
+  repeated string addrs = 3;
+}

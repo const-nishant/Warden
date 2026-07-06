@@ -1,0 +1,33 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+russh = "0.46"
+russh-keys = "0.46"
+prost = "0.13"
+ed25519-dalek = "2"
+sha2 = "0.10"
+bs58 = "0.5"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+age = "0.10"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+futures = "0.3"
+bytes = "1"
+russh-cryptovec = "0.7"
+async-trait = "0.1"
+libp2p = { version = "0.56", default-features = false, features = ["kad", "identify", "ping", "tcp", "dns", "noise", "yamux", "macros", "tokio", "relay", "dcutr", "autonat", "upnp"] }
+libp2p-identity = "0.2"
+ratatui = "0.29"
+crossterm = "0.28"
+home = "0.5"

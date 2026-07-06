@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+*.swp
+*.swo
+*~
+.DS_Store
+.vscode
+__pycache__
+*.pyc
+.idea
+*.iml
+env/
+.env
+warden_id
+known_hosts.json
+warden.db
