@@ -201,14 +201,18 @@ fn open_db() -> anyhow::Result<warden_storage::Database> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     let cli = Cli::parse();
+
+    // Don't init tracing for TUI (it would corrupt the alternate screen)
+    let is_tui = matches!(cli.command, Command::Tui { .. });
+    if !is_tui {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
+    }
 
     match cli.command {
         Command::Identity { action } => match action {
@@ -721,12 +725,11 @@ async fn main() -> anyhow::Result<()> {
             let _ = server_task.await;
         }
         Command::Tui { port } => {
-            println!("Launching TUI on port {port}...");
             let db = open_db()?;
             let (tx, rx) = mpsc::channel::<warden_transport::ChatSession>(64);
             let server_task = tokio::spawn(async move {
                 if let Err(e) = warden_transport::start_server("0.0.0.0", port, tx).await {
-                    tracing::error!("TUI server error: {e}");
+                    eprintln!("TUI server error: {e}");
                 }
             });
             let mut app = warden_tui::TuiApp::new(db, rx);

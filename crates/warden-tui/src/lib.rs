@@ -94,7 +94,7 @@ impl TuiApp {
 
             if event::poll(timeout)? {
                 let ev = event::read()?;
-                self.handle_key(ev);
+                self.handle_event(ev);
             }
 
             if last_tick.elapsed().unwrap_or_default() >= tick_rate {
@@ -203,20 +203,23 @@ impl TuiApp {
         }
     }
 
-    fn handle_key(&mut self, ev: Event) {
-        let Event::Key(key) = ev else { return };
-        if key.kind != KeyEventKind::Press {
-            return;
-        }
-
-        match key.code {
-            KeyCode::Char('q') if self.input.is_empty() => self.running = false,
-            KeyCode::Up | KeyCode::Char('k') if self.input.is_empty() => self.prev_conv(),
-            KeyCode::Down | KeyCode::Char('j') if self.input.is_empty() => self.next_conv(),
-            KeyCode::Enter => self.send(),
-            KeyCode::Backspace => { self.input.pop(); }
-            KeyCode::Esc => self.input.clear(),
-            KeyCode::Char(c) => self.input.push(c),
+    fn handle_event(&mut self, ev: Event) {
+        match ev {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                match key.code {
+                    KeyCode::Char('q') if self.input.is_empty() => self.running = false,
+                    KeyCode::Up | KeyCode::Char('k') if self.input.is_empty() => self.prev_conv(),
+                    KeyCode::Down | KeyCode::Char('j') if self.input.is_empty() => self.next_conv(),
+                    KeyCode::Enter => self.send(),
+                    KeyCode::Backspace => { self.input.pop(); }
+                    KeyCode::Esc => self.input.clear(),
+                    KeyCode::Char(c) => self.input.push(c),
+                    _ => {}
+                }
+            }
+            Event::Resize(_, _) => {
+                // Terminal resize is handled automatically by terminal.draw() in the run loop
+            }
             _ => {}
         }
     }
@@ -518,7 +521,7 @@ mod tests {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
         let mut app = TuiApp::new(db, rx);
-        app.handle_key(key_event(KeyCode::Char('q')));
+        app.handle_event(key_event(KeyCode::Char('q')));
         assert!(!app.running);
     }
 
@@ -527,8 +530,8 @@ mod tests {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
         let mut app = TuiApp::new(db, rx);
-        app.handle_key(key_event(KeyCode::Char('h')));
-        app.handle_key(key_event(KeyCode::Char('i')));
+        app.handle_event(key_event(KeyCode::Char('h')));
+        app.handle_event(key_event(KeyCode::Char('i')));
         assert_eq!(app.input, "hi");
     }
 
@@ -537,8 +540,8 @@ mod tests {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
         let mut app = TuiApp::new(db, rx);
-        app.handle_key(key_event(KeyCode::Char('x')));
-        app.handle_key(key_event(KeyCode::Char('q')));
+        app.handle_event(key_event(KeyCode::Char('x')));
+        app.handle_event(key_event(KeyCode::Char('q')));
         assert!(app.running);
         assert_eq!(app.input, "xq");
     }
@@ -548,9 +551,9 @@ mod tests {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
         let mut app = TuiApp::new(db, rx);
-        app.handle_key(key_event(KeyCode::Char('a')));
-        app.handle_key(key_event(KeyCode::Char('b')));
-        app.handle_key(key_event(KeyCode::Backspace));
+        app.handle_event(key_event(KeyCode::Char('a')));
+        app.handle_event(key_event(KeyCode::Char('b')));
+        app.handle_event(key_event(KeyCode::Backspace));
         assert_eq!(app.input, "a");
     }
 
@@ -559,8 +562,8 @@ mod tests {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
         let mut app = TuiApp::new(db, rx);
-        app.handle_key(key_event(KeyCode::Char('x')));
-        app.handle_key(key_event(KeyCode::Esc));
+        app.handle_event(key_event(KeyCode::Char('x')));
+        app.handle_event(key_event(KeyCode::Esc));
         assert!(app.input.is_empty());
     }
 
@@ -598,9 +601,9 @@ mod tests {
         app.poll_network();
         assert_eq!(app.conversations.len(), 1);
 
-        app.handle_key(key_event(KeyCode::Down));
+        app.handle_event(key_event(KeyCode::Down));
         assert_eq!(app.active_idx, 0);
-        app.handle_key(key_event(KeyCode::Char('k')));
+        app.handle_event(key_event(KeyCode::Char('k')));
         assert_eq!(app.active_idx, 0);
     }
 
