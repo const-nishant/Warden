@@ -1,0 +1,15 @@
+[package]
+name = "warden-storage"
+version = "0.1.0"
+edition = "2024"
+description = "Encrypted local message and contact storage via SQLite"
+
+[dependencies]
+warden-core = { path = "../warden-core" }
+warden-identity = { path = "../warden-identity" }
+rusqlite = { workspace = true }
+age = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
