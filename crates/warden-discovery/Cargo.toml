@@ -1,0 +1,17 @@
+[package]
+name = "warden-discovery"
+version = "0.1.0"
+edition = "2024"
+description = "libp2p Kademlia DHT peer discovery and NAT traversal"
+
+[dependencies]
+warden-core = { path = "../warden-core" }
+warden-identity = { path = "../warden-identity" }
+tokio = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+libp2p = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
