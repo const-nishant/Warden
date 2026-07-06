@@ -1,0 +1,727 @@
+//! Terminal UI for Warden powered by `ratatui` and `crossterm`.
+//!
+//! Provides a split-pane chat interface: conversation sidebar, message
+//! view, and input bar. [`TuiApp`] manages the event loop, key handling,
+//! network polling, and rendering.
+
+use std::time::{Duration, SystemTime};
+
+use bytes::Bytes;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use ratatui::crossterm::ExecutableCommand;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::prelude::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::Terminal;
+use tokio::sync::mpsc;
+use warden_storage::{ContactStore, Database, MessageStore, OutboxEntry, OutboxStore, StoredMessage, GroupStore};
+use warden_transport::{ChatSession, SessionEvent};
+
+#[derive(Clone, PartialEq)]
+enum ConvKind {
+    Peer,
+    Group,
+}
+
+struct Conversation {
+    peer_id: String,
+    kind: ConvKind,
+    name: String,
+    messages: Vec<StoredMessage>,
+    session: Option<ChatSession>,
+}
+
+pub struct TuiApp {
+    db: Database,
+    conversations: Vec<Conversation>,
+    active_idx: usize,
+    input: String,
+    status: String,
+    running: bool,
+    session_rx: mpsc::Receiver<ChatSession>,
+}
+
+impl TuiApp {
+    pub fn new(db: Database, session_rx: mpsc::Receiver<ChatSession>) -> Self {
+        Self {
+            conversations: Vec::new(),
+            active_idx: 0,
+            input: String::new(),
+            status: "Ready | /quit: exit | j/k: nav | Enter: send".into(),
+            running: true,
+            session_rx,
+            db,
+        }
+    }
+
+    fn active_peer(&self) -> Option<&str> {
+        self.conversations.get(self.active_idx).map(|c| c.peer_id.as_str())
+    }
+
+    fn active_kind(&self) -> ConvKind {
+        self.conversations.get(self.active_idx).map(|c| &c.kind).cloned().unwrap_or(ConvKind::Peer)
+    }
+
+    fn active_name(&self) -> Option<&str> {
+        self.conversations.get(self.active_idx).map(|c| c.name.as_str())
+    }
+
+    fn conv_label(&self, conv: &Conversation) -> String {
+        let is_online = conv.session.is_some();
+        let indicator = if is_online { "●" } else { "○" };
+        let glyph = if conv.kind == ConvKind::Group { "#" } else { "@" };
+        format!("{indicator} {glyph} {}", conv.name)
+    }
+
+    pub async fn run(&mut self) -> anyhow::Result<()> {
+        enable_raw_mode()?;
+        std::io::stdout().execute(EnterAlternateScreen)?;
+        let backend = CrosstermBackend::new(std::io::stdout());
+        let mut terminal = Terminal::new(backend)?;
+
+        let tick_rate = Duration::from_millis(100);
+        let mut last_tick = SystemTime::now();
+
+        while self.running {
+            self.poll_network();
+
+            let timeout = tick_rate
+                .checked_sub(last_tick.elapsed().unwrap_or_default())
+                .unwrap_or(Duration::ZERO);
+
+            if event::poll(timeout)? {
+                let ev = event::read()?;
+                self.handle_key(ev);
+            }
+
+            if last_tick.elapsed().unwrap_or_default() >= tick_rate {
+                last_tick = SystemTime::now();
+            }
+
+            terminal.draw(|f| self.render(f))?;
+        }
+
+        disable_raw_mode()?;
+        std::io::stdout().execute(LeaveAlternateScreen)?;
+        Ok(())
+    }
+
+    fn poll_network(&mut self) {
+        while let Ok(session) = self.session_rx.try_recv() {
+            let peer = session.peer_id.clone();
+            let _ = ContactStore::update_last_seen(&self.db, &peer, now_ms());
+            if let Some(conv) = self.conversations.iter_mut().find(|c| c.peer_id == peer) {
+                conv.session = Some(session);
+            } else {
+                let conv_id = conversation_id(&peer);
+                let msgs = MessageStore::get_conversation(&self.db, &conv_id).unwrap_or_default();
+                self.conversations.push(Conversation {
+                    peer_id: peer.clone(),
+                    kind: ConvKind::Peer,
+                    name: peer.clone(),
+                    messages: msgs,
+                    session: Some(session),
+                });
+            }
+            if self.db.list_contacts().unwrap_or_default().iter().all(|c| c.peer_id != peer) {
+                let contact = warden_storage::Contact {
+                    peer_id: peer.clone(),
+                    public_key: Vec::new(),
+                    alias: None,
+                    added_at_ms: now_ms(),
+                    last_seen_ms: Some(now_ms()),
+                };
+                let _ = ContactStore::add_contact(&self.db, contact);
+            }
+            self.status = format!("Connected: {peer}");
+        }
+
+            let to_remove: Vec<String> = self
+            .conversations
+            .iter_mut()
+            .filter_map(|conv| {
+                let session = conv.session.as_mut()?;
+                loop {
+                    match session.receiver.try_recv() {
+                        Ok(SessionEvent::Message(data)) => {
+                            let msg = StoredMessage {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                conversation_id: conversation_id(&conv.peer_id),
+                                sender_peer_id: conv.peer_id.clone(),
+                                ciphertext: data.to_vec(),
+                                signature: None,
+                                frame_type: 1,
+                                timestamp_unix_ms: now_ms(),
+                                delivered: true,
+                            };
+                            let _ = MessageStore::store_message(&self.db, msg.clone());
+                            conv.messages.push(msg);
+                        }
+                        Ok(SessionEvent::Disconnected) => {
+                            self.status = format!("{} disconnected", conv.peer_id);
+                            return Some(conv.peer_id.clone());
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            self.status = format!("{} session closed", conv.peer_id);
+                            return Some(conv.peer_id.clone());
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+
+        for peer_id in to_remove {
+            self.conversations.retain(|c| c.peer_id != peer_id);
+        }
+        if self.active_idx >= self.conversations.len() && !self.conversations.is_empty() {
+            self.active_idx = self.conversations.len() - 1;
+        } else if self.conversations.is_empty() {
+            self.active_idx = 0;
+        }
+        let online = self.conversations.iter().filter(|c| c.session.is_some()).count();
+        let total = self.conversations.len();
+        self.status = format!("{online}/{total} online | /quit: exit | j/k: nav | Enter: send");
+
+        // Load groups into sidebar if not present
+        let known_groups = self.db.list_groups().unwrap_or_default();
+        for group in &known_groups {
+            let gid = format!("group:{}", group.id);
+            if !self.conversations.iter().any(|c| c.peer_id == gid) {
+                self.conversations.push(Conversation {
+                    peer_id: gid,
+                    kind: ConvKind::Group,
+                    name: group.name.clone(),
+                    messages: Vec::new(),
+                    session: None,
+                });
+            }
+        }
+    }
+
+    fn handle_key(&mut self, ev: Event) {
+        let Event::Key(key) = ev else { return };
+        if key.kind != KeyEventKind::Press {
+            return;
+        }
+
+        match key.code {
+            KeyCode::Char('q') if self.input.is_empty() => self.running = false,
+            KeyCode::Up | KeyCode::Char('k') if self.input.is_empty() => self.prev_conv(),
+            KeyCode::Down | KeyCode::Char('j') if self.input.is_empty() => self.next_conv(),
+            KeyCode::Enter => self.send(),
+            KeyCode::Backspace => { self.input.pop(); }
+            KeyCode::Esc => self.input.clear(),
+            KeyCode::Char(c) => self.input.push(c),
+            _ => {}
+        }
+    }
+
+    fn prev_conv(&mut self) {
+        if !self.conversations.is_empty() {
+            self.active_idx = self.active_idx.wrapping_sub(1).min(self.conversations.len() - 1);
+        }
+    }
+
+    fn next_conv(&mut self) {
+        if !self.conversations.is_empty() {
+            self.active_idx = (self.active_idx + 1) % self.conversations.len();
+        }
+    }
+
+    fn send(&mut self) {
+        let text = self.input.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        if text.eq_ignore_ascii_case("/quit") {
+            self.running = false;
+            self.input.clear();
+            return;
+        }
+
+        let target = match self.active_peer() {
+            Some(p) => p.to_string(),
+            None => {
+                self.status = "No conversation selected".into();
+                self.input.clear();
+                return;
+            }
+        };
+
+        let now = now_ms();
+        let kind = self.active_kind();
+
+        if kind == ConvKind::Group {
+            let group_id = target.strip_prefix("group:").unwrap_or(&target).to_string();
+            let members =
+                self.db.group_members(&group_id).unwrap_or_default();
+            let mut delivered_count = 0;
+
+            for m in &members {
+                let cid = conversation_id(&m.peer_id);
+                let msg = StoredMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    conversation_id: cid,
+                    sender_peer_id: String::new(),
+                    ciphertext: text.as_bytes().to_vec(),
+                    signature: None,
+                    frame_type: 1,
+                    timestamp_unix_ms: now,
+                    delivered: true,
+                };
+                let _ = MessageStore::store_message(&self.db, msg);
+
+                if let Some(peer_conv) =
+                    self.conversations.iter_mut().find(|c| c.peer_id == m.peer_id && c.kind == ConvKind::Peer) &&
+                    let Some(ref mut s) = peer_conv.session
+                {
+                    let _ = s.sender.try_send(Bytes::from(text.clone()));
+                    delivered_count += 1;
+                }
+            }
+
+            if let Some(conv) = self.conversations.get_mut(self.active_idx) {
+                conv.messages.push(StoredMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    conversation_id: format!("group:{group_id}"),
+                    sender_peer_id: String::new(),
+                    ciphertext: text.as_bytes().to_vec(),
+                    signature: None,
+                    frame_type: 1,
+                    timestamp_unix_ms: now,
+                    delivered: true,
+                });
+            }
+
+            self.status = format!("Group: delivered to {delivered_count}/{} members", members.len());
+        } else {
+            let msg = StoredMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                conversation_id: conversation_id(&target),
+                sender_peer_id: String::new(),
+                ciphertext: text.as_bytes().to_vec(),
+                signature: None,
+                frame_type: 1,
+                timestamp_unix_ms: now,
+                delivered: true,
+            };
+            let _ = MessageStore::store_message(&self.db, msg);
+
+            if let Some(conv) = self.conversations.get_mut(self.active_idx) {
+                let stored = StoredMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    conversation_id: conversation_id(&target),
+                    sender_peer_id: String::new(),
+                    ciphertext: text.as_bytes().to_vec(),
+                    signature: None,
+                    frame_type: 1,
+                    timestamp_unix_ms: now,
+                    delivered: true,
+                };
+                conv.messages.push(stored);
+
+                if let Some(ref mut session) = conv.session {
+                    let _ = session.sender.try_send(Bytes::from(text));
+                } else {
+                    let entry = OutboxEntry {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        target_peer_id: target,
+                        frame_bytes: text.into_bytes(),
+                        created_at_ms: now,
+                        retry_count: 0,
+                        last_attempt_ms: None,
+                        delivered: false,
+                    };
+                    let _ = OutboxStore::enqueue(&self.db, entry);
+                    self.status = "Queued for delivery".into();
+                }
+            }
+        }
+
+        self.input.clear();
+    }
+
+    fn render(&self, frame: &mut ratatui::Frame) {
+        let area = frame.area();
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(3),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .split(area);
+
+        let main = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(30),
+                Constraint::Min(10),
+            ])
+            .split(chunks[0]);
+
+        self.render_sidebar(frame, main[0]);
+        self.render_messages(frame, main[1]);
+        self.render_input(frame, chunks[1]);
+        self.render_status(frame, chunks[2]);
+    }
+
+    fn render_sidebar(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        let items: Vec<ListItem> = self
+            .conversations
+            .iter()
+            .enumerate()
+            .map(|(i, conv)| {
+                let prefix = if i == self.active_idx { ">" } else { " " };
+                let style = if i == self.active_idx {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(format!("{prefix} {}", self.conv_label(conv))).style(style)
+            })
+            .collect();
+
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title("Chats"))
+            .highlight_style(Style::default().fg(Color::Yellow));
+        frame.render_widget(list, area);
+    }
+
+    fn render_messages(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        let peer_label = self.active_name().or_else(|| self.active_peer()).unwrap_or("(no selection)");
+
+        let lines: Vec<Line> = if let Some(conv) = self.conversations.get(self.active_idx) {
+            conv.messages
+                .iter()
+                .map(|msg| {
+                    let sender = if msg.sender_peer_id.is_empty() { "me" } else { "them" };
+                    let ts = format_timestamp(msg.timestamp_unix_ms);
+                    let text = String::from_utf8_lossy(&msg.ciphertext);
+                    Line::from(vec![
+                        Span::raw(format!("[{ts}] ")),
+                        Span::styled(
+                            format!("{sender}: "),
+                            Style::default().fg(if sender == "me" { Color::Cyan } else { Color::Green }),
+                        ),
+                        Span::raw(text.to_string()),
+                    ])
+                })
+                .collect()
+        } else {
+            vec![Line::from("No messages")]
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!("Chat — {peer_label}"));
+        let para = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false });
+        frame.render_widget(para, area);
+    }
+
+    fn render_input(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        let block = Block::default().borders(Borders::ALL).title("Message");
+        let para = Paragraph::new(self.input.as_str())
+            .block(block)
+            .style(Style::default().fg(Color::White));
+        frame.render_widget(para, area);
+    }
+
+    fn render_status(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        let para = Paragraph::new(self.status.as_str())
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(para, area);
+    }
+}
+
+fn conversation_id(peer_id: &str) -> String {
+    peer_id.to_string()
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+fn format_timestamp(ms: i64) -> String {
+    let secs = ms / 1000;
+    let nanos = ((ms % 1000) * 1_000_000) as u32;
+    match chrono::DateTime::from_timestamp(secs, nanos) {
+        Some(dt) => dt.format("%H:%M").to_string(),
+        None => "?".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tokio::sync::mpsc;
+    use warden_storage::Database;
+
+    fn test_db() -> Database {
+        let db = Database::open(":memory:").unwrap();
+        db.migrate().unwrap();
+        db
+    }
+
+    fn key_event(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::empty()))
+    }
+
+    #[test]
+    fn now_ms_returns_positive() {
+        assert!(now_ms() > 1_700_000_000_000i64);
+    }
+
+    #[test]
+    fn conversation_id_matches_input() {
+        assert_eq!(conversation_id("alice"), "alice");
+        assert_eq!(conversation_id("bob"), "bob");
+    }
+
+    #[test]
+    fn format_timestamp_valid() {
+        let s = format_timestamp(1_700_000_000_000i64);
+        assert_eq!(s.len(), 5);
+    }
+
+    #[test]
+    fn format_timestamp_invalid() {
+        let s = format_timestamp(i64::MAX);
+        assert_eq!(s, "?");
+    }
+
+    #[test]
+    fn tui_app_new_defaults() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let app = TuiApp::new(db, rx);
+        assert!(app.conversations.is_empty());
+        assert_eq!(app.active_idx, 0);
+        assert!(app.input.is_empty());
+        assert_eq!(app.status, "Ready | /quit: exit | j/k: nav | Enter: send");
+        assert!(app.running);
+    }
+
+    #[test]
+    fn key_q_quits_when_input_empty() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.handle_key(key_event(KeyCode::Char('q')));
+        assert!(!app.running);
+    }
+
+    #[test]
+    fn key_char_appends_to_input() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.handle_key(key_event(KeyCode::Char('h')));
+        app.handle_key(key_event(KeyCode::Char('i')));
+        assert_eq!(app.input, "hi");
+    }
+
+    #[test]
+    fn key_q_does_not_quit_with_input() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.handle_key(key_event(KeyCode::Char('x')));
+        app.handle_key(key_event(KeyCode::Char('q')));
+        assert!(app.running);
+        assert_eq!(app.input, "xq");
+    }
+
+    #[test]
+    fn key_backspace_pops_input() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.handle_key(key_event(KeyCode::Char('a')));
+        app.handle_key(key_event(KeyCode::Char('b')));
+        app.handle_key(key_event(KeyCode::Backspace));
+        assert_eq!(app.input, "a");
+    }
+
+    #[test]
+    fn key_esc_clears_input() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.handle_key(key_event(KeyCode::Char('x')));
+        app.handle_key(key_event(KeyCode::Esc));
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn prev_conv_noop_when_empty() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.prev_conv();
+        assert_eq!(app.active_idx, 0);
+    }
+
+    #[test]
+    fn next_conv_noop_when_empty() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.next_conv();
+        assert_eq!(app.active_idx, 0);
+    }
+
+    #[test]
+    fn key_nav_works_with_conversations() {
+        let db = test_db();
+        let (tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        let (session_tx, _session_rx) = mpsc::channel(8);
+        let (_ev_tx, ev_rx) = mpsc::channel(8);
+        let session = ChatSession {
+            peer_id: "alice".into(),
+            sender: session_tx,
+            receiver: ev_rx,
+        };
+        tx.try_send(session).unwrap();
+        app.poll_network();
+        assert_eq!(app.conversations.len(), 1);
+
+        app.handle_key(key_event(KeyCode::Down));
+        assert_eq!(app.active_idx, 0);
+        app.handle_key(key_event(KeyCode::Char('k')));
+        assert_eq!(app.active_idx, 0);
+    }
+
+    #[test]
+    fn prev_next_conv_wraps() {
+        let db = test_db();
+        let (tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+
+        for i in 0..3 {
+            let s = mk_session(&format!("peer{i}"));
+            tx.try_send(s).unwrap();
+        }
+        app.poll_network();
+        assert_eq!(app.conversations.len(), 3);
+
+        app.next_conv();
+        assert_eq!(app.active_idx, 1);
+        app.next_conv();
+        assert_eq!(app.active_idx, 2);
+        app.next_conv();
+        assert_eq!(app.active_idx, 0);
+        app.prev_conv();
+        assert_eq!(app.active_idx, 2);
+    }
+
+    fn mk_session(peer: &str) -> ChatSession {
+        let (tx, _rx) = mpsc::channel(8);
+        let (ev_tx, ev_rx) = mpsc::channel(8);
+        std::mem::forget(ev_tx); // keep receiver alive (no Disconnected)
+        ChatSession {
+            peer_id: peer.to_string(),
+            sender: tx,
+            receiver: ev_rx,
+        }
+    }
+
+    #[test]
+    fn send_empty_noop() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.send();
+        assert!(app.running);
+    }
+
+    #[test]
+    fn send_quit_exits() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.input = "/quit".into();
+        app.send();
+        assert!(!app.running);
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn send_with_no_active_peer_shows_status() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.input = "hello".into();
+        app.send();
+        assert_eq!(app.status, "No conversation selected");
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn send_with_online_peer_sends_message() {
+        let db = test_db();
+        let (tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        let (session_tx, mut session_rx) = mpsc::channel(8);
+        let (_ev_tx, ev_rx) = mpsc::channel(8);
+        let session = ChatSession {
+            peer_id: "bob".into(),
+            sender: session_tx,
+            receiver: ev_rx,
+        };
+        tx.try_send(session).unwrap();
+        app.poll_network();
+
+        app.input = "hey".into();
+        app.send();
+        assert!(app.input.is_empty());
+
+        // message should have been sent via session
+        let sent = session_rx.try_recv().unwrap();
+        assert_eq!(sent, Bytes::from("hey"));
+    }
+
+    #[test]
+    fn poll_network_adds_contact_automatically() {
+        let (tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(test_db(), rx);
+
+        let session = mk_session("charlie");
+        tx.try_send(session).unwrap();
+        app.poll_network();
+
+        let contacts = app.db.list_contacts().unwrap();
+        assert!(contacts.iter().any(|c| c.peer_id == "charlie"));
+    }
+
+    #[test]
+    fn active_peer_returns_none_when_empty() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let app = TuiApp::new(db, rx);
+        assert_eq!(app.active_peer(), None);
+    }
+
+    #[test]
+    fn active_peer_returns_selected() {
+        let db = test_db();
+        let (tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        let session = mk_session("frank");
+        tx.try_send(session).unwrap();
+        app.poll_network();
+        assert_eq!(app.active_peer(), Some("frank"));
+    }
+}
