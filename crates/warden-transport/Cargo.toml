@@ -1,0 +1,20 @@
+[package]
+name = "warden-transport"
+version = "0.1.0"
+edition = "2024"
+description = "Embedded SSH server and client for the chat subsystem"
+
+[dependencies]
+warden-core = { path = "../warden-core" }
+warden-identity = { path = "../warden-identity" }
+russh = { workspace = true }
+russh-keys = { workspace = true }
+russh-cryptovec = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
