@@ -4829,7 +4829,7 @@ dependencies = [
 
 [[package]]
 name = "warden"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4853,7 +4853,7 @@ dependencies = [
 
 [[package]]
 name = "warden-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -4867,7 +4867,7 @@ dependencies = [
 
 [[package]]
 name = "warden-discovery"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -4883,7 +4883,7 @@ dependencies = [
 
 [[package]]
 name = "warden-identity"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bs58",
  "ed25519-dalek",
@@ -4897,7 +4897,7 @@ dependencies = [
 
 [[package]]
 name = "warden-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures",
@@ -4913,7 +4913,7 @@ dependencies = [
 
 [[package]]
 name = "warden-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "age",
  "rusqlite",
@@ -4927,7 +4927,7 @@ dependencies = [
 
 [[package]]
 name = "warden-transport"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4946,7 +4946,7 @@ dependencies = [
 
 [[package]]
 name = "warden-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",

@@ -34,6 +34,14 @@ struct Conversation {
     session: Option<ChatSession>,
 }
 
+const COMMANDS: &[&str] = &[
+    "/connect <addr>",
+    "/group create <name>",
+    "/group add <peer_id>",
+    "/group list",
+    "/quit",
+];
+
 pub struct TuiApp {
     db: Database,
     conversations: Vec<Conversation>,
@@ -42,19 +50,52 @@ pub struct TuiApp {
     status: String,
     running: bool,
     session_rx: mpsc::Receiver<ChatSession>,
+    connect_rx: mpsc::UnboundedReceiver<ChatSession>,
+    connect_handle: mpsc::UnboundedSender<String>,
+    show_cmd_palette: bool,
+    cmd_palette_idx: usize,
 }
 
 impl TuiApp {
     pub fn new(db: Database, session_rx: mpsc::Receiver<ChatSession>) -> Self {
+        let (connect_cmd_tx, _) = mpsc::unbounded_channel::<String>();
+        let (_, connect_res_rx) = mpsc::unbounded_channel::<ChatSession>();
         Self {
             conversations: Vec::new(),
             active_idx: 0,
             input: String::new(),
-            status: "Ready | /quit: exit | j/k: nav | Enter: send".into(),
+            status: "Type / to see all commands | j/k: nav | Enter: send".into(),
             running: true,
             session_rx,
             db,
+            connect_rx: connect_res_rx,
+            connect_handle: connect_cmd_tx,
+            show_cmd_palette: false,
+            cmd_palette_idx: 0,
         }
+    }
+
+    fn start_connect_handler(&mut self) {
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<String>();
+        let (res_tx, res_rx) = mpsc::unbounded_channel::<ChatSession>();
+        self.connect_handle = cmd_tx;
+        self.connect_rx = res_rx;
+        tokio::spawn(async move {
+            while let Some(addr) = cmd_rx.recv().await {
+                match warden_transport::connect(&addr).await {
+                    Ok(session) => {
+                        let _ = res_tx.send(session);
+                    }
+                    Err(e) => {
+                        tracing::warn!("TUI connect to {addr} failed: {e}");
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn connect_handle(&self) -> mpsc::UnboundedSender<String> {
+        self.connect_handle.clone()
     }
 
     fn active_peer(&self) -> Option<&str> {
@@ -77,6 +118,7 @@ impl TuiApp {
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
+        self.start_connect_handler();
         enable_raw_mode()?;
         std::io::stdout().execute(EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(std::io::stdout());
@@ -183,6 +225,23 @@ impl TuiApp {
         } else if self.conversations.is_empty() {
             self.active_idx = 0;
         }
+        // Handle outbound connect results
+        while let Ok(session) = self.connect_rx.try_recv() {
+            let peer = session.peer_id.clone();
+            if !self.conversations.iter().any(|c| c.peer_id == peer) {
+                let conv_id = conversation_id(&peer);
+                let msgs = MessageStore::get_conversation(&self.db, &conv_id).unwrap_or_default();
+                self.conversations.push(Conversation {
+                    peer_id: peer.clone(),
+                    kind: ConvKind::Peer,
+                    name: peer.clone(),
+                    messages: msgs,
+                    session: Some(session),
+                });
+                self.status = format!("Connected to {peer}");
+            }
+        }
+
         let online = self.conversations.iter().filter(|c| c.session.is_some()).count();
         let total = self.conversations.len();
         self.status = format!("{online}/{total} online | /quit: exit | j/k: nav | Enter: send");
@@ -206,6 +265,28 @@ impl TuiApp {
     fn handle_event(&mut self, ev: Event) {
         match ev {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if self.show_cmd_palette {
+                    match key.code {
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            self.cmd_palette_idx = (self.cmd_palette_idx + 1) % COMMANDS.len();
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            self.cmd_palette_idx = self.cmd_palette_idx.wrapping_sub(1).min(COMMANDS.len() - 1);
+                        }
+                        KeyCode::Enter => {
+                            let cmd = COMMANDS[self.cmd_palette_idx];
+                            self.input = cmd.split(' ').next().unwrap_or(cmd).to_string();
+                            self.show_cmd_palette = false;
+                            self.cmd_palette_idx = 0;
+                        }
+                        KeyCode::Esc => {
+                            self.show_cmd_palette = false;
+                            self.cmd_palette_idx = 0;
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 match key.code {
                     KeyCode::Char('q') if self.input.is_empty() => self.running = false,
                     KeyCode::Up | KeyCode::Char('k') if self.input.is_empty() => self.prev_conv(),
@@ -213,13 +294,15 @@ impl TuiApp {
                     KeyCode::Enter => self.send(),
                     KeyCode::Backspace => { self.input.pop(); }
                     KeyCode::Esc => self.input.clear(),
+                    KeyCode::Char('/') if self.input.is_empty() => {
+                        self.show_cmd_palette = true;
+                        self.cmd_palette_idx = 0;
+                    }
                     KeyCode::Char(c) => self.input.push(c),
                     _ => {}
                 }
             }
-            Event::Resize(_, _) => {
-                // Terminal resize is handled automatically by terminal.draw() in the run loop
-            }
+            Event::Resize(_, _) => {}
             _ => {}
         }
     }
@@ -236,13 +319,98 @@ impl TuiApp {
         }
     }
 
+    fn handle_command(&mut self, text: &str) -> bool {
+        let parts: Vec<&str> = text.split_whitespace().collect();
+        if parts.is_empty() {
+            return false;
+        }
+        match parts[0] {
+            "/quit" => {
+                self.running = false;
+                true
+            }
+            "/connect" => {
+                if parts.len() < 2 {
+                    self.status = "Usage: /connect <ip:port>".into();
+                } else {
+                    let addr = parts[1..].join(" ");
+                    self.connect_handle.send(addr.clone()).ok();
+                    self.status = format!("Connecting to {addr}...");
+                }
+                true
+            }
+            "/group" => {
+                if parts.len() < 2 {
+                    self.status = "Usage: /group create <name> | /group add <peer_id> | /group list".into();
+                    return true;
+                }
+                match parts[1] {
+                    "create" => {
+                        if parts.len() < 3 {
+                            self.status = "Usage: /group create <name>".into();
+                        } else {
+                            let name = parts[2..].join(" ");
+                            let id = uuid::Uuid::new_v4().to_string();
+                            if self.db.create_group(&id, &name).is_ok() {
+                                let gid = format!("group:{id}");
+                                self.conversations.push(Conversation {
+                                    peer_id: gid,
+                                    kind: ConvKind::Group,
+                                    name: name.clone(),
+                                    messages: Vec::new(),
+                                    session: None,
+                                });
+                                self.status = format!("Group '{name}' created");
+                            } else {
+                                self.status = "Failed to create group".into();
+                            }
+                        }
+                    }
+                    "add" => {
+                        if parts.len() < 3 {
+                            self.status = "Usage: /group add <peer_id>".into();
+                        } else {
+                            let peer_id = parts[2];
+                            if let Some(conv) = self.conversations.get(self.active_idx) {
+                                if conv.kind == ConvKind::Group {
+                                    let group_id = conv.peer_id.strip_prefix("group:").unwrap_or(&conv.peer_id).to_string();
+                                    if self.db.add_member(&group_id, peer_id).is_ok() {
+                                        self.status = format!("Added {peer_id} to group");
+                                    } else {
+                                        self.status = "Failed to add member".into();
+                                    }
+                                } else {
+                                    self.status = "Select a group conversation first".into();
+                                }
+                            }
+                        }
+                    }
+                    "list" => {
+                        let groups = self.db.list_groups().unwrap_or_default();
+                        if groups.is_empty() {
+                            self.status = "No groups".into();
+                        } else {
+                            let names: Vec<String> = groups.iter().map(|g| g.name.clone()).collect();
+                            self.status = format!("Groups: {}", names.join(", "));
+                        }
+                    }
+                    _ => {
+                        self.status = "Unknown /group subcommand: create | add | list".into();
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn send(&mut self) {
         let text = self.input.trim().to_string();
         if text.is_empty() {
             return;
         }
-        if text.eq_ignore_ascii_case("/quit") {
-            self.running = false;
+        if text.starts_with('/') {
+            self.handle_command(&text);
             self.input.clear();
             return;
         }
@@ -261,8 +429,7 @@ impl TuiApp {
 
         if kind == ConvKind::Group {
             let group_id = target.strip_prefix("group:").unwrap_or(&target).to_string();
-            let members =
-                self.db.group_members(&group_id).unwrap_or_default();
+            let members = self.db.group_members(&group_id).unwrap_or_default();
             let mut delivered_count = 0;
 
             for m in &members {
@@ -372,6 +539,37 @@ impl TuiApp {
         self.render_messages(frame, main[1]);
         self.render_input(frame, chunks[1]);
         self.render_status(frame, chunks[2]);
+
+        if self.show_cmd_palette {
+            self.render_cmd_palette(frame, chunks[1]);
+        }
+    }
+
+    fn render_cmd_palette(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        let height = COMMANDS.len() as u16 + 2;
+        let palette_area = ratatui::layout::Rect {
+            x: area.x + 1,
+            y: area.y.saturating_sub(height).max(0),
+            width: 40.min(area.width.saturating_sub(2)),
+            height,
+        };
+        let items: Vec<ListItem> = COMMANDS
+            .iter()
+            .enumerate()
+            .map(|(i, cmd)| {
+                let style = if i == self.cmd_palette_idx {
+                    Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+                } else {
+                    Style::default().fg(Color::Cyan)
+                };
+                let prefix = if i == self.cmd_palette_idx { ">" } else { " " };
+                ListItem::new(format!("{prefix} {cmd}")).style(style)
+            })
+            .collect();
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title("Commands"))
+            .highlight_style(Style::default().fg(Color::Yellow));
+        frame.render_widget(list, palette_area);
     }
 
     fn render_sidebar(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
@@ -512,7 +710,7 @@ mod tests {
         assert!(app.conversations.is_empty());
         assert_eq!(app.active_idx, 0);
         assert!(app.input.is_empty());
-        assert_eq!(app.status, "Ready | /quit: exit | j/k: nav | Enter: send");
+        assert_eq!(app.status, "Type / to see all commands | j/k: nav | Enter: send");
         assert!(app.running);
     }
 
