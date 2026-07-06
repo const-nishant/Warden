@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "code-review-graph": {
+      "command": "uvx",
+      "args": [
+        "code-review-graph",
+        "serve"
+      ],
+      "cwd": "P:\\vs-code\\projects\\Warden",
+      "type": "stdio",
+      "env": []
+    },
+    "ast-grep": {
+      "command": "ast-grep-mcp-server",
+      "args": [],
+      "type": "stdio",
+      "env": {}
+    }
+  }
+}
