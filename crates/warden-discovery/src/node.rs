@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use libp2p::kad::{
-    self, store::MemoryStore, QueryId, QueryResult, Record, RecordKey,
+    self, store::MemoryStore, store::RecordStore, QueryId, QueryResult, Record, RecordKey,
 };
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{identify, identity as libp2p_identity, ping, Multiaddr};
@@ -50,6 +50,9 @@ enum Command {
         tx: oneshot::Sender<Vec<Multiaddr>>,
     },
     AddAnnounceAddr(Multiaddr),
+    RetryBootstrap {
+        tx: oneshot::Sender<Result<(), DiscoveryError>>,
+    },
 }
 
 struct EventLoop {
@@ -60,6 +63,7 @@ struct EventLoop {
     extra_announce_addrs: Vec<Multiaddr>,
     pending_announces: HashMap<QueryId, oneshot::Sender<Result<(), DiscoveryError>>>,
     pending_resolves: HashMap<QueryId, oneshot::Sender<Result<Vec<Multiaddr>, DiscoveryError>>>,
+    pending_bootstrap: Option<oneshot::Sender<Result<(), DiscoveryError>>>,
     command_rx: mpsc::Receiver<Command>,
 }
 
@@ -176,6 +180,20 @@ impl EventLoop {
                     .kademlia
                     .add_address(&peer_id, addr);
             }
+            // Deferred bootstrap: now that the peer is in the routing table
+            // (added via add_address above), trigger kad.bootstrap()
+            if let Some(tx) = self.pending_bootstrap.take() {
+                match self.swarm.behaviour_mut().kademlia.bootstrap() {
+                    Ok(query_id) => {
+                        info!("DHT bootstrap started, query id: {query_id}");
+                        let _ = tx.send(Ok(()));
+                    }
+                    Err(e) => {
+                        warn!("DHT bootstrap returned no known peers: {e}");
+                        let _ = tx.send(Err(DiscoveryError::Dht(e.to_string())));
+                    }
+                }
+            }
         }
     }
 
@@ -242,12 +260,9 @@ impl EventLoop {
                         warn!("Failed to dial bootstrap peer {peer}: {e}");
                     }
                 }
-
-                match self.swarm.behaviour_mut().kademlia.bootstrap() {
-                    Ok(query_id) => info!("DHT bootstrap started, query id: {query_id}"),
-                    Err(e) => warn!("DHT bootstrap returned no known peers: {e}"),
-                }
-                let _ = tx.send(Ok(()));
+                // Defer kad.bootstrap() until Identify response adds the peer
+                // to the routing table (handled in handle_identify_event)
+                self.pending_bootstrap = Some(tx);
             }
             Command::Announce { tx } => {
                 let mut all_addrs = self.listening_addrs.clone();
@@ -257,13 +272,22 @@ impl EventLoop {
                 let value = serde_json::to_vec(&addrs).unwrap_or_default();
                 let key = RecordKey::new(&self.peer_id.as_str().as_bytes());
 
+                // Always store locally so the record is available even without peers
+                let record = Record {
+                    key: key.clone(),
+                    value: value.clone(),
+                    publisher: None,
+                    expires: None,
+                };
+                let _ = self.swarm.behaviour_mut().kademlia.store_mut().put(record);
+
+                // Also replicate to DHT peers if any exist
                 let record = Record {
                     key,
                     value,
                     publisher: None,
                     expires: None,
                 };
-
                 match self
                     .swarm
                     .behaviour_mut()
@@ -273,10 +297,9 @@ impl EventLoop {
                     Ok(query_id) => {
                         self.pending_announces.insert(query_id, tx);
                     }
-                    Err(e) => {
-                        let _ = tx.send(Err(DiscoveryError::Dht(format!(
-                            "announce failed: {e}"
-                        ))));
+                    Err(_) => {
+                        // No peers to replicate to — local store is sufficient
+                        let _ = tx.send(Ok(()));
                     }
                 }
             }
@@ -307,6 +330,19 @@ impl EventLoop {
             }
             Command::AddAnnounceAddr(addr) => {
                 self.extra_announce_addrs.push(addr);
+            }
+            Command::RetryBootstrap { tx } => {
+                let result = self.swarm.behaviour_mut().kademlia.bootstrap();
+                match result {
+                    Ok(query_id) => {
+                        info!("DHT retry bootstrap started, query id: {query_id}");
+                        let _ = tx.send(Ok(()));
+                    }
+                    Err(e) => {
+                        warn!("DHT retry bootstrap still has no known peers: {e}");
+                        let _ = tx.send(Err(DiscoveryError::Dht(e.to_string())));
+                    }
+                }
             }
         }
     }
@@ -550,6 +586,7 @@ impl DiscoveryNode {
             extra_announce_addrs: Vec::new(),
             pending_announces: HashMap::new(),
             pending_resolves: HashMap::new(),
+            pending_bootstrap: None,
             command_rx,
         };
 
@@ -571,7 +608,12 @@ impl DiscoveryNode {
             .send(Command::Bootstrap { peers, tx })
             .await
             .map_err(|_| DiscoveryError::Shutdown)?;
-        rx.await.map_err(|_| DiscoveryError::Shutdown)?
+        // Wait for deferred bootstrap with a timeout so we don't hang
+        // if Identify never fires (e.g. dial fails silently)
+        tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .map_err(|_| DiscoveryError::Dht("bootstrap dial timed out".into()))?
+            .map_err(|_| DiscoveryError::Shutdown)?
     }
 
     pub async fn announce(&self) -> Result<(), DiscoveryError> {
@@ -596,6 +638,15 @@ impl DiscoveryNode {
         let (tx, rx) = oneshot::channel();
         self.command_tx
             .send(Command::ConnectRelay { relay_addr, tx })
+            .await
+            .map_err(|_| DiscoveryError::Shutdown)?;
+        rx.await.map_err(|_| DiscoveryError::Shutdown)?
+    }
+
+    pub async fn retry_bootstrap(&self) -> Result<(), DiscoveryError> {
+        let (tx, rx) = oneshot::channel();
+        self.command_tx
+            .send(Command::RetryBootstrap { tx })
             .await
             .map_err(|_| DiscoveryError::Shutdown)?;
         rx.await.map_err(|_| DiscoveryError::Shutdown)?

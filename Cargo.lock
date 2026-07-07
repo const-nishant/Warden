@@ -4829,7 +4829,7 @@ dependencies = [
 
 [[package]]
 name = "warden"
-version = "0.2.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4867,7 +4867,7 @@ dependencies = [
 
 [[package]]
 name = "warden-discovery"
-version = "0.2.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -4946,7 +4946,7 @@ dependencies = [
 
 [[package]]
 name = "warden-tui"
-version = "0.2.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "bytes",

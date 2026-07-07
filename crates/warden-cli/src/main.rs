@@ -213,7 +213,9 @@ async fn resolve_peer_id(
     bootstrap: &[String],
     relay: &[String],
 ) -> anyhow::Result<std::net::SocketAddr> {
-    let keypair = warden_identity::IdentityKeypair::load(identity_path()?)?;
+    // Use an ephemeral keypair so the temporary DHT node does not conflict
+    // with a running daemon that uses the same identity (self-dial would fail).
+    let keypair = warden_identity::IdentityKeypair::generate();
     let bootstrap_addrs = parse_multiaddrs(bootstrap)?;
     let relay_addrs = parse_multiaddrs(relay)?;
 
@@ -227,8 +229,16 @@ async fn resolve_peer_id(
 
     if !bootstrap_addrs.is_empty() {
         println!("Bootstrapping DHT to {} peers...", bootstrap_addrs.len());
-        node.bootstrap(bootstrap_addrs).await?;
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        match node.bootstrap(bootstrap_addrs).await {
+            Ok(()) => println!("DHT bootstrap ready."),
+            Err(e) => println!("DHT bootstrap dial: {e} (will retry)"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        match node.retry_bootstrap().await {
+            Ok(()) => println!("DHT bootstrap ready."),
+            Err(e) => println!("DHT bootstrap warning: {e} (proceeding anyway)"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 
     let target = warden_core::PeerId::new(peer_id);
