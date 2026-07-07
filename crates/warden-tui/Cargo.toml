@@ -9,6 +9,7 @@ warden-core = { path = "../warden-core" }
 warden-identity = { path = "../warden-identity" }
 warden-storage = { path = "../warden-storage" }
 warden-transport = { path = "../warden-transport" }
+warden-discovery = { path = "../warden-discovery" }
 tokio = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
@@ -18,3 +19,4 @@ chrono = { workspace = true }
 anyhow = { workspace = true }
 home = { workspace = true }
 tracing = { workspace = true }
+libp2p = { workspace = true }

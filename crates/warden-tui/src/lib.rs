@@ -31,7 +31,7 @@ struct Conversation {
 }
 
 const COMMANDS: &[&str] = &[
-    "/connect <addr>",
+    "/connect <addr|peer_id>",
     "/contacts add <peer_id>",
     "/contacts list",
     "/contacts remove <peer_id>",
@@ -58,12 +58,19 @@ pub struct TuiApp {
     session_rx: mpsc::Receiver<ChatSession>,
     connect_rx: mpsc::UnboundedReceiver<ChatSession>,
     connect_handle: mpsc::UnboundedSender<String>,
+    bootstrap_addrs: Vec<String>,
+    relay_addrs: Vec<String>,
     show_cmd_palette: bool,
     cmd_palette_idx: usize,
 }
 
 impl TuiApp {
-    pub fn new(db: Database, session_rx: mpsc::Receiver<ChatSession>) -> Self {
+    pub fn new(
+        db: Database,
+        session_rx: mpsc::Receiver<ChatSession>,
+        bootstrap_addrs: Vec<String>,
+        relay_addrs: Vec<String>,
+    ) -> Self {
         let (connect_cmd_tx, _) = mpsc::unbounded_channel::<String>();
         let (_, connect_res_rx) = mpsc::unbounded_channel::<ChatSession>();
         Self {
@@ -76,6 +83,8 @@ impl TuiApp {
             db,
             connect_rx: connect_res_rx,
             connect_handle: connect_cmd_tx,
+            bootstrap_addrs,
+            relay_addrs,
             show_cmd_palette: false,
             cmd_palette_idx: 0,
         }
@@ -91,16 +100,30 @@ impl TuiApp {
     fn start_connect_handler(&mut self) {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<String>();
         let (res_tx, res_rx) = mpsc::unbounded_channel::<ChatSession>();
+        let bootstrap = self.bootstrap_addrs.clone();
+        let relay = self.relay_addrs.clone();
         self.connect_handle = cmd_tx;
         self.connect_rx = res_rx;
         tokio::spawn(async move {
             while let Some(addr) = cmd_rx.recv().await {
-                match warden_transport::connect(&addr).await {
+                let resolved = if addr.parse::<std::net::SocketAddr>().is_ok() {
+                    addr.clone()
+                } else {
+                    // PeerID — use DHT resolution
+                    match resolve_via_dht(&addr, &bootstrap, &relay).await {
+                        Ok(sa) => sa.to_string(),
+                        Err(e) => {
+                            tracing::warn!("DHT resolution of {addr} failed: {e}");
+                            addr.clone()
+                        }
+                    }
+                };
+                match warden_transport::connect(&resolved).await {
                     Ok(session) => {
                         let _ = res_tx.send(session);
                     }
                     Err(e) => {
-                        tracing::warn!("TUI connect to {addr} failed: {e}");
+                        tracing::warn!("TUI connect to {resolved} failed: {e}");
                     }
                 }
             }
@@ -350,7 +373,7 @@ impl TuiApp {
             }
             "/connect" => {
                 if parts.len() < 2 {
-                    self.status = "Usage: /connect <addr>".into();
+                    self.status = "Usage: /connect <addr|peer_id>".into();
                 } else {
                     let addr = parts[1..].join(" ");
                     self.connect_handle.send(addr.clone()).ok();
@@ -821,6 +844,77 @@ fn conversation_id(peer_id: &str) -> String {
     peer_id.to_string()
 }
 
+async fn resolve_via_dht(
+    peer_id: &str,
+    bootstrap: &[String],
+    relay: &[String],
+) -> anyhow::Result<std::net::SocketAddr> {
+    use std::time::Duration;
+    use warden_discovery::DiscoveryNode;
+    use warden_identity::IdentityKeypair;
+    use libp2p::Multiaddr;
+
+    let keypair = IdentityKeypair::generate();
+    let node = DiscoveryNode::new(&keypair, vec![]).await?;
+
+    let bootstrap_addrs: Vec<Multiaddr> = bootstrap
+        .iter()
+        .filter_map(|s| s.parse::<Multiaddr>().ok())
+        .collect();
+    let relay_addrs: Vec<Multiaddr> = relay
+        .iter()
+        .filter_map(|s| s.parse::<Multiaddr>().ok())
+        .collect();
+
+    for relay_addr in &relay_addrs {
+        let _ = node.connect_relay(relay_addr.clone()).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    if !bootstrap_addrs.is_empty() {
+        let _ = node.bootstrap(bootstrap_addrs).await;
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let _ = node.retry_bootstrap().await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    let target = warden_core::PeerId::new(peer_id);
+    let addrs = node.resolve(target).await?;
+
+    let mut fallback = None;
+    for addr in &addrs {
+        if let Some(sa) = multiaddr_to_socketaddr(addr) {
+            if sa.port() == 2222 {
+                return Ok(sa);
+            }
+            if fallback.is_none() {
+                fallback = Some(sa);
+            }
+        }
+    }
+
+    if let Some(sa) = fallback {
+        return Ok(std::net::SocketAddr::new(sa.ip(), 2222));
+    }
+
+    anyhow::bail!("peer {peer_id} found on DHT but no valid IP:port address")
+}
+
+fn multiaddr_to_socketaddr(ma: &libp2p::Multiaddr) -> Option<std::net::SocketAddr> {
+    use libp2p::multiaddr::Protocol;
+    let mut ip = None;
+    let mut port = None;
+    for proto in ma.iter() {
+        match proto {
+            Protocol::Ip4(a) => ip = Some(std::net::IpAddr::V4(a)),
+            Protocol::Ip6(a) => ip = Some(std::net::IpAddr::V6(a)),
+            Protocol::Tcp(p) => port = Some(p),
+            _ => {}
+        }
+    }
+    Some(std::net::SocketAddr::new(ip?, port?))
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -881,7 +975,7 @@ mod tests {
     fn tui_app_new_defaults() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let app = TuiApp::new(db, rx);
+        let app = TuiApp::new(db, rx, vec![], vec![]);
         assert!(app.conversations.is_empty());
         assert_eq!(app.active_idx, 0);
         assert!(app.input.is_empty());
@@ -893,7 +987,7 @@ mod tests {
     fn key_q_quits_when_input_empty() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.handle_event(key_event(KeyCode::Char('q')));
         assert!(!app.running);
     }
@@ -902,7 +996,7 @@ mod tests {
     fn key_char_appends_to_input() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.handle_event(key_event(KeyCode::Char('h')));
         app.handle_event(key_event(KeyCode::Char('i')));
         assert_eq!(app.input, "hi");
@@ -912,7 +1006,7 @@ mod tests {
     fn key_q_does_not_quit_with_input() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.handle_event(key_event(KeyCode::Char('x')));
         app.handle_event(key_event(KeyCode::Char('q')));
         assert!(app.running);
@@ -923,7 +1017,7 @@ mod tests {
     fn key_backspace_pops_input() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.handle_event(key_event(KeyCode::Char('a')));
         app.handle_event(key_event(KeyCode::Char('b')));
         app.handle_event(key_event(KeyCode::Backspace));
@@ -934,7 +1028,7 @@ mod tests {
     fn key_esc_clears_input() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.handle_event(key_event(KeyCode::Char('x')));
         app.handle_event(key_event(KeyCode::Esc));
         assert!(app.input.is_empty());
@@ -944,7 +1038,7 @@ mod tests {
     fn prev_conv_noop_when_empty() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.prev_conv();
         assert_eq!(app.active_idx, 0);
     }
@@ -953,7 +1047,7 @@ mod tests {
     fn next_conv_noop_when_empty() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.next_conv();
         assert_eq!(app.active_idx, 0);
     }
@@ -962,7 +1056,7 @@ mod tests {
     fn key_nav_works_with_conversations() {
         let db = test_db();
         let (tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         let (session_tx, _session_rx) = mpsc::channel(8);
         let (_ev_tx, ev_rx) = mpsc::channel(8);
         let session = ChatSession {
@@ -984,7 +1078,7 @@ mod tests {
     fn prev_next_conv_wraps() {
         let db = test_db();
         let (tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
 
         for i in 0..3 {
             let s = mk_session(&format!("peer{i}"));
@@ -1018,7 +1112,7 @@ mod tests {
     fn send_empty_noop() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.send();
         assert!(app.running);
     }
@@ -1027,7 +1121,7 @@ mod tests {
     fn send_quit_exits() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.input = "/quit".into();
         app.send();
         assert!(!app.running);
@@ -1038,7 +1132,7 @@ mod tests {
     fn send_with_no_active_peer_shows_status() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.input = "hello".into();
         app.send();
         assert_eq!(app.status, "No conversation selected");
@@ -1049,7 +1143,7 @@ mod tests {
     fn send_with_online_peer_sends_message() {
         let db = test_db();
         let (tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         let (session_tx, mut session_rx) = mpsc::channel(8);
         let (_ev_tx, ev_rx) = mpsc::channel(8);
         let session = ChatSession {
@@ -1071,7 +1165,7 @@ mod tests {
     #[test]
     fn poll_network_adds_contact_automatically() {
         let (tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(test_db(), rx);
+        let mut app = TuiApp::new(test_db(), rx, vec![], vec![]);
 
         let session = mk_session("charlie");
         tx.try_send(session).unwrap();
@@ -1085,7 +1179,7 @@ mod tests {
     fn active_peer_returns_none_when_empty() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let app = TuiApp::new(db, rx);
+        let app = TuiApp::new(db, rx, vec![], vec![]);
         assert_eq!(app.active_peer(), None);
     }
 
@@ -1093,7 +1187,7 @@ mod tests {
     fn active_peer_returns_selected() {
         let db = test_db();
         let (tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         let session = mk_session("frank");
         tx.try_send(session).unwrap();
         app.poll_network();
@@ -1104,7 +1198,7 @@ mod tests {
     fn help_command_lists_commands() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.input = "/help".into();
         app.send();
         assert!(app.status.starts_with("Commands:"), "status: {}", app.status);
@@ -1114,7 +1208,7 @@ mod tests {
     fn history_command_no_messages() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.input = "/history alice".into();
         app.send();
         assert_eq!(app.status, "No messages with alice");
@@ -1124,7 +1218,7 @@ mod tests {
     fn contacts_add_via_command() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.input = "/contacts add testpeer".into();
         app.send();
         assert_eq!(app.status, "Added contact testpeer");
@@ -1134,7 +1228,7 @@ mod tests {
     fn contacts_list_after_add() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.input = "/contacts add alice".into();
         app.send();
         app.input = "/contacts list".into();
@@ -1146,7 +1240,7 @@ mod tests {
     fn contacts_remove_via_command() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.input = "/contacts add bob".into();
         app.send();
         app.input = "/contacts remove bob".into();
@@ -1158,7 +1252,7 @@ mod tests {
     fn history_shows_latest_message() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         let now = now_ms();
 
         let msg = StoredMessage {
@@ -1183,7 +1277,7 @@ mod tests {
     fn groups_create_via_command() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.input = "/groups create testgroup".into();
         app.send();
         assert!(app.status.contains("testgroup"));
@@ -1193,7 +1287,7 @@ mod tests {
     fn groups_list_empty() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.input = "/groups list".into();
         app.send();
         assert_eq!(app.status, "No groups");
@@ -1203,7 +1297,7 @@ mod tests {
     fn outbox_send_via_command() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.input = "/outbox send testpeer hello".into();
         app.send();
         assert_eq!(app.status, "Queued message for testpeer");
@@ -1213,7 +1307,7 @@ mod tests {
     fn outbox_list_after_send() {
         let db = test_db();
         let (_tx, rx) = mpsc::channel(8);
-        let mut app = TuiApp::new(db, rx);
+        let mut app = TuiApp::new(db, rx, vec![], vec![]);
         app.input = "/outbox send p1 hi".into();
         app.send();
         app.input = "/outbox list".into();

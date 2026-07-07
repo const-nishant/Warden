@@ -59,6 +59,12 @@ enum Command {
         /// Port for SSH chat server
         #[arg(long, default_value = "2222")]
         port: u16,
+        /// Bootstrap peer multiaddrs for DHT resolution (can be repeated)
+        #[arg(long = "bootstrap", short)]
+        bootstrap: Vec<String>,
+        /// Relay server multiaddr (can be repeated)
+        #[arg(long = "relay", short = 'r')]
+        relay: Vec<String>,
     },
     /// Outbox management (store-and-forward)
     Outbox {
@@ -839,7 +845,7 @@ async fn main() -> anyhow::Result<()> {
 
             let _ = server_task.await;
         }
-        Command::Tui { port } => {
+        Command::Tui { port, bootstrap, relay } => {
             let db = open_db()?;
             let (tx, rx) = mpsc::channel::<warden_transport::ChatSession>(64);
             let server_task = tokio::spawn(async move {
@@ -847,7 +853,7 @@ async fn main() -> anyhow::Result<()> {
                     eprintln!("TUI server error: {e}");
                 }
             });
-            let mut app = warden_tui::TuiApp::new(db, rx);
+            let mut app = warden_tui::TuiApp::new(db, rx, bootstrap, relay);
             app.run().await?;
             server_task.abort();
         }
@@ -1255,7 +1261,7 @@ mod tests {
     #[test]
     fn cli_parses_tui_defaults() {
         let cli = super::Cli::try_parse_from(["warden", "tui"]).unwrap();
-        if let super::Command::Tui { port } = cli.command {
+        if let super::Command::Tui { port, .. } = cli.command {
             assert_eq!(port, 2222);
         } else {
             panic!("expected Tui command");
