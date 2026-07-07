@@ -113,3 +113,7 @@ crates/
 ├── warden-tui         # Terminal UI (ratatui + crossterm)
 └── warden-cli         # CLI binary with all subcommands
 ```
+
+## License
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

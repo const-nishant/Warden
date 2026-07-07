@@ -1,402 +1,712 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Warden — Peer-to-Peer Decentralized Chat over SSH</title>
-  <meta name="description" content="Warden is a decentralized chat application where messages travel directly between peers over SSH. No servers, no central registry. Your identity is your Ed25519 keypair.">
-  <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ['Inter', 'system-ui', 'sans-serif'],
-            mono: ['JetBrains Mono', 'monospace'],
-          },
-          colors: {
-            warden: { bg: '#0d1117', surface: '#161b22', border: '#30363d', accent: '#58a6ff', success: '#3fb950', text: '#c9d1d9', muted: '#8b949e', code: '#1c2128' },
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Warden — p2p chat over ssh</title>
+    <meta
+      name="description"
+      content="Decentralized chat. Messages travel directly between peers over SSH. No servers. Your keypair is your identity."
+    />
+    <link rel="icon" type="image/svg+xml" href="assets/logo.svg" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      tailwind = {
+        config: {
+          theme: {
+            extend: {
+              fontFamily: {
+                sans: ['"JetBrains Mono"', "monospace"],
+                mono: ['"JetBrains Mono"', "monospace"],
+              },
+            },
           },
         },
-      },
-    }
-  </script>
-  <style>
-    body { background: #0d1117; color: #c9d1d9; }
-    ::selection { background: #58a6ff44; }
-    ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-track { background: #0d1117; }
-    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+      };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        overflow-x: hidden;
+        background:
+          radial-gradient(
+            circle at top left,
+            rgba(37, 99, 235, 0.22),
+            transparent 34%
+          ),
+          radial-gradient(
+            circle at top right,
+            rgba(14, 165, 233, 0.16),
+            transparent 30%
+          ),
+          linear-gradient(to bottom, #09090b, #111827 52%, #0f172a 100%);
+      }
 
-    html { scroll-behavior: smooth; }
+      ::selection {
+        background: #2563eb;
+        color: #fafafa;
+      }
 
-    .section-link { scroll-margin-top: 4rem; }
-    .hover-lift { transition: transform 0.2s ease, box-shadow 0.2s ease; }
-    .hover-lift:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(88,166,255,0.08); }
+      .grain {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 9999;
+        opacity: 0.025;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+        background-repeat: repeat;
+        background-size: 256px 256px;
+      }
 
-    .reveal { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
-    .reveal.visible { opacity: 1; transform: translateY(0); }
-    .reveal-delay-1 { transition-delay: 0.1s; }
-    .reveal-delay-2 { transition-delay: 0.2s; }
-    .reveal-delay-3 { transition-delay: 0.3s; }
+      .brutal {
+        border: 2px solid #3f3f46;
+        box-shadow: 8px 8px 0 #000;
+        transition: transform 150ms ease, box-shadow 150ms ease;
+      }
 
-    .fade-in { opacity: 0; transition: opacity 0.8s ease; }
-    .fade-in.visible { opacity: 1; }
+      .brutal-sm {
+        border: 1.5px solid #3f3f46;
+        box-shadow: 4px 4px 0 #000;
+      }
 
-    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
-    .cursor-blink::after {
-      content: "▊";
-      color: #58a6ff;
-      animation: blink 1s step-end infinite;
-      margin-left: 2px;
-    }
+      .brutal-hover:hover {
+        transform: translate(-3px, -3px);
+        box-shadow: 11px 11px 0 #000;
+      }
 
-    @keyframes pulse-glow {
-      0%,100% { opacity: 0.6; }
-      50% { opacity: 1; }
-    }
-    .arch-pulse { animation: pulse-glow 3s ease-in-out infinite; }
+      .brutal-btn {
+        border: 2px solid #3f3f46;
+        box-shadow: 5px 5px 0 #000;
+        transition: transform 100ms ease, box-shadow 100ms ease;
+        cursor: pointer;
+      }
 
-    @keyframes float {
-      0%,100% { transform: translateY(0); }
-      50% { transform: translateY(-4px); }
-    }
-    .float-slow { animation: float 4s ease-in-out infinite; }
+      .brutal-btn:hover {
+        transform: translate(-2px, -2px);
+        box-shadow: 7px 7px 0 #000;
+      }
 
-    .nav-link { position: relative; transition: color 0.2s ease; }
-    .nav-link::after {
-      content: '';
-      position: absolute; bottom: -2px; left: 0; right: 0;
-      height: 1.5px; background: #58a6ff; border-radius: 1px;
-      transform: scaleX(0); transition: transform 0.2s ease;
-    }
-    .nav-link:hover { color: #c9d1d9 !important; }
-    .nav-link:hover::after,
-    .nav-link.active::after { transform: scaleX(1); }
-    .nav-link.active { color: #c9d1d9 !important; }
+      .brutal-btn:active {
+        transform: translate(3px, 3px);
+        box-shadow: 2px 2px 0 #000;
+      }
 
-    .hero-gradient {
-      background: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(88,166,255,0.06) 0%, transparent 70%);
-    }
+      .status-dot {
+        width: 7px; height: 7px; border-radius: 50%; background: #22c55e;
+        animation: pulse-dot 2s ease-in-out infinite;
+      }
+      @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
-    table { border-collapse: collapse; }
-    tbody tr { transition: background 0.15s ease; }
-    tbody tr:hover { background: rgba(88,166,255,0.04); }
+      .stack-bar {
+        height: 0.45rem;
+        border-radius: 9999px;
+        transition: width 0.6s ease, opacity 0.3s ease;
+      }
+      .stack-bar:hover { opacity: 0.6; }
 
-    .grid-card {
-      transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-    }
-    .grid-card:hover {
-      transform: translateY(-3px);
-      box-shadow: 0 8px 24px rgba(88,166,255,0.08);
-      border-color: #58a6ff44 !important;
-    }
+      .deco-bar { width: 1.5rem; height: 3px; background: #38bdf8; }
 
-    .badge-pill {
-      transition: background 0.2s ease, border-color 0.2s ease;
-    }
-    .badge-pill:hover {
-      background: #1c2128;
-      border-color: #58a6ff44;
-      color: #c9d1d9;
-    }
-  </style>
-</head>
-<body class="font-sans antialiased">
-  <div class="min-h-screen flex flex-col">
+      .security-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 
-    <!-- Nav -->
-    <header class="sticky top-0 z-50" style="background:#0d1117dd; backdrop-filter:blur(10px); border-bottom:1px solid #30363d;">
-      <nav class="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
-        <a href="/" class="flex items-center gap-2 text-sm font-semibold no-underline hover-lift" style="color:#c9d1d9;">
-          <img src="/assets/logo.svg" alt="" width="22" height="22" class="shrink-0 float-slow">
-          <span>Warden</span>
-        </a>
-        <div class="flex items-center gap-6 text-sm" style="color:#8b949e;">
-          <a href="https://github.com/const-nishant/Warden" class="nav-link no-underline" style="color:inherit;">GitHub</a>
-          <a href="#install" class="nav-link no-underline" style="color:inherit;">Install</a>
-          <a href="https://github.com/const-nishant/Warden#readme" class="nav-link no-underline" style="color:inherit;">Docs</a>
-          <a href="#features" class="nav-link no-underline hidden sm:inline-block" style="color:inherit;">Features</a>
-          <a href="#architecture" class="nav-link no-underline hidden sm:inline-block" style="color:inherit;">Architecture</a>
+      .code-block {
+        position: relative;
+        background: #020617;
+        border: 1px solid #1e293b;
+        padding: 0.7rem 3.2rem 0.7rem 1rem;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.78rem;
+        line-height: 1.6;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+      .code-block .copy-btn {
+        position: absolute; top: 0.5rem; right: 0.5rem;
+        font-size: 0.55rem; letter-spacing: 0.12em; text-transform: uppercase;
+        padding: 0.2rem 0.5rem;
+        border: 1px solid #334155; background: #0f172a;
+        color: #64748b; cursor: pointer;
+        opacity: 0; transition: opacity 150ms ease, color 150ms ease, border-color 150ms ease;
+      }
+      .code-block:hover .copy-btn { opacity: 1; }
+      .code-block .copy-btn:hover { color: #38bdf8; border-color: #38bdf8; }
+      .code-block .copy-btn.done { color: #22c55e; border-color: #22c55e; opacity: 1; }
+
+      @keyframes blink {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0;
+        }
+      }
+      .cursor {
+        animation: blink 1s step-end infinite;
+        color: #2563eb;
+      }
+
+      @keyframes fadeUp {
+        from {
+          opacity: 0;
+          transform: translateY(20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .fade-up {
+        animation: fadeUp 0.6s ease both;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+          scroll-behavior: auto !important;
+        }
+      }
+
+      ::-webkit-scrollbar {
+        width: 4px;
+        height: 4px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #27272a;
+        border-radius: 9999px;
+      }
+    </style>
+  </head>
+  <body class="font-sans bg-slate-950 text-slate-100">
+    <div class="grain"></div>
+
+    <main class="relative mx-auto max-w-6xl px-4 pb-12 pt-6 sm:px-6 lg:px-8">
+      <nav
+        class="fade-up flex flex-col gap-4 border-b border-slate-800/80 pb-5 text-sm text-slate-100 sm:flex-row sm:items-center sm:justify-between"
+        style="animation-delay: 0.02s"
+      >
+         <a
+           href="/"
+            class="flex items-center gap-3 text-lg font-extrabold"
+         >
+           <div class="relative flex items-center">
+             <img
+               src="assets/logo.svg"
+               alt="Warden logo"
+               class="h-8 w-8 shrink-0"
+             />
+             <span class="status-dot absolute -right-1 -top-0.5"></span>
+           </div>
+           <span>warden</span>
+         </a>
+        <div class="flex flex-wrap gap-x-6 gap-y-2 text-slate-400">
+           <a href="#install" class="transition-colors hover:text-slate-100"
+            >Install</a
+          >
+          <a href="#commands" class="transition-colors hover:text-slate-100"
+            >Commands</a
+          >
+          <a
+            href="https://github.com/const-nishant/Warden"
+            class="transition-colors hover:text-slate-100"
+            >GitHub</a
+          >
         </div>
       </nav>
-    </header>
 
-    <main class="flex-1">
-
-      <!-- Hero -->
-      <section class="relative max-w-3xl mx-auto px-6 pt-32 pb-24 text-center section-link hero-gradient" id="hero">
-        <div class="reveal visible">
-          <h1 class="text-4xl sm:text-5xl font-bold tracking-tight mb-4" style="color:#c9d1d9;">
-            Peer-to-peer<br>decentralized chat over <span style="color:#58a6ff;" class="cursor-blink">SSH</span>
-          </h1>
-          <p class="text-lg sm:text-xl max-w-xl mx-auto mb-10" style="color:#8b949e;">
-            Messages travel directly between peers — no servers, no central registry.
-            Your identity is your Ed25519 SSH keypair.
+      <section
+        class="fade-up grid items-center gap-10 py-16 md:grid-cols-[1.15fr_0.85fr] lg:py-24"
+        style="animation-delay: 0.08s"
+      >
+        <div>
+          <p
+            class="mb-4 inline-flex rounded-full border border-slate-800 bg-slate-900/85 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.24em] text-slate-400 shadow-sm backdrop-blur"
+          >
+            peer-to-peer SSH chat
           </p>
-          <div class="flex flex-wrap justify-center gap-4 text-sm">
-            <a href="#install" style="background:#58a6ff; color:#fff; padding:0.625rem 1.5rem; border-radius:6px; font-weight:600;" class="no-underline hover-lift inline-block">Install</a>
-            <a href="https://github.com/const-nishant/Warden" style="border:1px solid #30363d; color:#c9d1d9; padding:0.625rem 1.5rem; border-radius:6px; font-weight:500;" class="no-underline hover-lift inline-block">GitHub</a>
-            <a href="#architecture" style="border:1px solid #30363d; color:#c9d1d9; padding:0.625rem 1.5rem; border-radius:6px; font-weight:500;" class="no-underline hover-lift inline-block">How it works</a>
+          <h1
+            class="max-w-4xl text-5xl font-black tracking-[-0.03em] leading-[0.95] sm:text-6xl lg:text-7xl"
+          >
+            <span class="block">decentralized</span>
+            <span class="block text-sky-400">chat over SSH</span>
+          </h1>
+          <p
+            class="mt-6 max-w-xl text-base leading-7 text-slate-400 sm:text-lg"
+          >
+            Messages travel directly between peers, with no central server and
+            no central registry. Your
+            <strong class="text-slate-100">Ed25519 SSH keypair</strong>
+            is your identity.
+          </p>
+           <div class="mt-8 h-px w-24" style="background: linear-gradient(90deg, #38bdf8, transparent);"></div>
+           <div class="mt-8 flex flex-col gap-3 sm:flex-row">
+            <a
+              href="#install"
+              class="brutal-btn inline-flex items-center justify-center bg-sky-500 px-5 py-3 text-sm font-semibold text-white"
+            >
+               Get Started
+            </a>
+            <a
+              href="https://github.com/const-nishant/Warden"
+              class="brutal-btn inline-flex items-center justify-center bg-slate-900 px-5 py-3 text-sm font-medium text-slate-100"
+            >
+              GitHub
+            </a>
           </div>
         </div>
-        <!-- subtle ambient glow -->
-        <div style="position:absolute; bottom:-60px; left:50%; transform:translateX(-50%); width:300px; height:120px; background:radial-gradient(ellipse, rgba(88,166,255,0.08) 0%, transparent 70%); pointer-events:none;"></div>
-      </section>
 
-      <!-- Features -->
-      <section class="max-w-5xl mx-auto px-6 py-24 section-link" id="features">
-        <h2 class="text-2xl font-semibold mb-12 text-center reveal" style="color:#c9d1d9;">Three pillars</h2>
-        <div class="grid md:grid-cols-3 gap-8">
-          <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1.75rem;" class="grid-card reveal reveal-delay-1">
-            <div style="width:40px; height:40px; border:1px solid #30363d; border-radius:8px; display:flex; align-items:center; justify-content:center; margin-bottom:1rem; transition:border-color 0.2s ease, background 0.2s ease;" class="icon-box">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/></svg>
+        <div class="fade-up" style="animation-delay: 0.14s">
+          <div class="brutal overflow-hidden bg-slate-900/95">
+            <div
+              class="flex items-center gap-2 border-b border-slate-800 px-4 py-3"
+            >
+              <span class="h-2.5 w-2.5 rounded-full bg-slate-700"></span>
+              <span class="h-2.5 w-2.5 rounded-full bg-slate-700"></span>
+              <span class="h-2.5 w-2.5 rounded-full bg-slate-700"></span>
+              <span class="ml-2 font-mono text-[11px] text-slate-400"
+                >warden — v0.2.0</span
+              >
             </div>
-            <h3 class="text-base font-semibold mb-2" style="color:#c9d1d9;">No Central Server</h3>
-            <p class="text-sm leading-relaxed" style="color:#8b949e;">Messages go directly between peers over SSH. DHT-based discovery means no central registry or point of failure.</p>
-          </div>
-          <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1.75rem;" class="grid-card reveal reveal-delay-2">
-            <div style="width:40px; height:40px; border:1px solid #30363d; border-radius:8px; display:flex; align-items:center; justify-content:center; margin-bottom:1rem; transition:border-color 0.2s ease, background 0.2s ease;" class="icon-box">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <div
+              class="space-y-3 px-4 py-5 font-mono text-[12px] leading-6 sm:text-[13px]"
+            >
+              <div class="flex gap-2">
+                <span class="text-sky-400">$</span
+                ><span class="break-all">warden identity init</span>
+              </div>
+              <div class="pl-5 text-slate-400">
+                → PeerID: <span class="text-sky-400">12D3KooW...</span>
+              </div>
+              <div class="flex gap-2 pt-1">
+                <span class="text-sky-400">$</span
+                ><span class="break-all">warden tui --port 2222</span>
+              </div>
+              <pre
+                class="overflow-x-auto rounded-none border border-slate-800 bg-slate-950 p-3 text-slate-400"
+              >
+╭──────────────────────────────╮
+│  ○ @alice        ● online    │
+│  ○ @bob          ○ offline   │
+│  # dev-group     ● online    │
+╰──────────────────────────────╯</pre
+              >
+              <div class="flex gap-2 pt-1">
+                <span class="text-sky-400">$</span
+                ><span>/connect 192.168.1.5:2222</span>
+              </div>
+              <div class="pl-5 text-sky-400">connected to 192.168.1.5:2222</div>
+              <div class="flex gap-2 pt-1">
+                <span class="text-sky-400">$</span
+                ><span>hey, what's up? <span class="cursor">▊</span></span>
+              </div>
             </div>
-            <h3 class="text-base font-semibold mb-2" style="color:#c9d1d9;">Identity = Keypair</h3>
-            <p class="text-sm leading-relaxed" style="color:#8b949e;">Your Ed25519 SSH keypair is your identity. No usernames, no passwords, no accounts.</p>
           </div>
-          <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1.75rem;" class="grid-card reveal reveal-delay-3">
-            <div style="width:40px; height:40px; border:1px solid #30363d; border-radius:8px; display:flex; align-items:center; justify-content:center; margin-bottom:1rem; transition:border-color 0.2s ease, background 0.2s ease;" class="icon-box">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </div>
+      </section>
+
+      <section class="fade-up py-12" style="animation-delay: 0.12s">
+        <div class="grid gap-4 md:grid-cols-[0.9fr_1.1fr] md:items-stretch">
+          <div class="brutal bg-slate-900/95 p-6">
+             <p
+               class="mb-3 font-mono text-[11px] uppercase tracking-[0.24em]"
+             >
+               <span class="text-sky-400">[</span><span class="text-slate-400"> why it works </span><span class="text-sky-400">]</span>
+             </p>
+            <h2 class="text-2xl font-bold tracking-[-0.03em]">
+              Direct peer connections with a hardened SSH tunnel.
+            </h2>
+            <p class="mt-4 max-w-xl text-sm leading-6 text-slate-400">
+              Discovery, transport, and framing stay separate: peers find each
+              other through the DHT, then exchange protobuf-framed chat messages
+              over SSH.
+            </p>
+            <div class="mt-6 flex flex-wrap gap-2">
+              <span
+                class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
+                >DHT discovery</span
+              >
+              <span
+                class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
+                >SSH transport</span
+              >
+              <span
+                class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
+                >protobuf frames</span
+              >
             </div>
-            <h3 class="text-base font-semibold mb-2" style="color:#c9d1d9;">SSH-Secured Transport</h3>
-            <p class="text-sm leading-relaxed" style="color:#8b949e;">Reuses well-audited SSH for encrypted transport and public-key authentication. No novel crypto.</p>
+          </div>
+          <div class="brutal bg-slate-900/95 p-4 sm:p-6">
+            <img
+              src="assets/arch.svg"
+              alt="Warden architecture diagram"
+              class="h-auto w-full"
+              loading="lazy"
+            />
           </div>
         </div>
       </section>
 
-      <!-- How It Works -->
-      <section class="max-w-4xl mx-auto px-6 py-24 section-link" id="how-it-works">
-        <h2 class="text-2xl font-semibold mb-12 text-center reveal" style="color:#c9d1d9;">How it works</h2>
-        <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:2rem;" class="reveal flex justify-center">
-          <svg viewBox="0 0 600 220" width="600" height="220" class="w-full max-w-lg h-auto" xmlns="http://www.w3.org/2000/svg">
-            <!-- Peer A -->
-            <rect x="20" y="60" width="140" height="100" rx="8" stroke="#58a6ff" stroke-width="2" fill="#0d1117"/>
-            <text x="90" y="100" text-anchor="middle" fill="#c9d1d9" font-family="Inter, sans-serif" font-size="14" font-weight="600">Peer A</text>
-            <text x="90" y="122" text-anchor="middle" fill="#8b949e" font-family="JetBrains Mono, monospace" font-size="10">Ed25519 Keypair</text>
-            <!-- DHT -->
-            <ellipse cx="300" cy="110" rx="80" ry="40" stroke="#3fb950" stroke-width="2" fill="#0d1117" stroke-dasharray="4 3" class="arch-pulse"/>
-            <text x="300" y="108" text-anchor="middle" fill="#3fb950" font-family="Inter, sans-serif" font-size="12" font-weight="600">Kademlia</text>
-            <text x="300" y="124" text-anchor="middle" fill="#3fb950" font-family="Inter, sans-serif" font-size="10">DHT</text>
-            <!-- Peer B -->
-            <rect x="440" y="60" width="140" height="100" rx="8" stroke="#58a6ff" stroke-width="2" fill="#0d1117"/>
-            <text x="510" y="100" text-anchor="middle" fill="#c9d1d9" font-family="Inter, sans-serif" font-size="14" font-weight="600">Peer B</text>
-            <text x="510" y="122" text-anchor="middle" fill="#8b949e" font-family="JetBrains Mono, monospace" font-size="10">Ed25519 Keypair</text>
-            <!-- Arrows -->
-            <defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#8b949e"/></marker></defs>
-            <line x1="160" y1="90" x2="220" y2="95" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a)"/>
-            <line x1="380" y1="95" x2="440" y2="90" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a)"/>
-            <!-- SSH tunnel -->
-            <line x1="160" y1="140" x2="440" y2="140" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="6 3"/>
-            <text x="300" y="155" text-anchor="middle" fill="#58a6ff" font-family="JetBrains Mono, monospace" font-size="10">SSH tunnel (subsystem "chat")</text>
-            <text x="300" y="170" text-anchor="middle" fill="#8b949e" font-family="JetBrains Mono, monospace" font-size="10">Protobuf-framed messages</text>
-          </svg>
-        </div>
-        <div class="grid sm:grid-cols-3 gap-4 mt-8 text-center text-sm" style="color:#8b949e;">
-          <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem;" class="grid-card reveal reveal-delay-1">
-            <span class="block font-semibold mb-1" style="color:#58a6ff;">1. Discover</span>
-            Peers find each other via Kademlia DHT
-          </div>
-          <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem;" class="grid-card reveal reveal-delay-2">
-            <span class="block font-semibold mb-1" style="color:#58a6ff;">2. Authenticate</span>
-            SSH public key auth establishes trust
-          </div>
-          <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem;" class="grid-card reveal reveal-delay-3">
-            <span class="block font-semibold mb-1" style="color:#58a6ff;">3. Chat</span>
-            Protobuf-framed messages over SSH
-          </div>
+      <section class="fade-up py-12" style="animation-delay: 0.18s">
+        <div class="grid gap-5 md:grid-cols-3">
+          <article class="brutal-hover brutal bg-slate-900/95 p-6">
+            <div class="mb-1 text-4xl font-black text-sky-400">01</div>
+            <div class="deco-bar mb-3"></div>
+              <h2 class="mb-2 text-lg font-bold">No Server</h2>
+            <p class="text-sm leading-6 text-slate-400">
+              Messages go directly between peers over SSH. Discovery uses a
+              Kademlia DHT.
+            </p>
+          </article>
+          <article class="brutal-hover brutal bg-slate-900/95 p-6">
+            <div class="mb-1 text-4xl font-black text-sky-400">02</div>
+            <div class="deco-bar mb-3"></div>
+            <h2 class="mb-2 text-lg font-bold">Your Key, Your ID</h2>
+            <p class="text-sm leading-6 text-slate-400">
+              Ed25519 SSH keypair is your identity. No usernames, no accounts,
+              no registry.
+            </p>
+          </article>
+          <article class="brutal-hover brutal bg-slate-900/95 p-6">
+            <div class="mb-1 text-4xl font-black text-sky-400">03</div>
+            <div class="deco-bar mb-3"></div>
+            <h2 class="mb-2 text-lg font-bold">SSH-Secured</h2>
+            <p class="text-sm leading-6 text-slate-400">
+              Reuses well-audited SSH for transport and auth. Subsystem-only, no
+              shell access.
+            </p>
+          </article>
         </div>
       </section>
 
-      <!-- Quick Start -->
-      <section class="max-w-4xl mx-auto px-6 py-24 section-link" id="install">
-        <h2 class="text-2xl font-semibold mb-8 text-center reveal" style="color:#c9d1d9;">Quick start</h2>
-        <div class="reveal" style="background:#1c2128; border:1px solid #30363d; border-radius:8px; padding:1.5rem; font-family:'JetBrains Mono',monospace; font-size:0.8125rem; line-height:1.8;">
-          <div><span style="color:#3fb950;">$ </span><span style="color:#c9d1d9;">cargo install warden --git https://github.com/const-nishant/Warden</span></div>
-          <div class="mt-3" style="color:#8b949e;"># Generate identity</div>
-          <div><span style="color:#3fb950;">$ </span><span style="color:#c9d1d9;">warden identity init</span></div>
-          <div style="color:#8b949e; padding-left:1.25rem;">→ PeerID: <span style="color:#58a6ff;">12D3KooW...</span></div>
-          <div class="mt-3" style="color:#8b949e;"># Start listening</div>
-          <div><span style="color:#3fb950;">$ </span><span style="color:#c9d1d9;">warden listen --port 2222</span></div>
-          <div class="mt-3" style="color:#8b949e;"># Connect to a peer</div>
-          <div><span style="color:#3fb950;">$ </span><span style="color:#c9d1d9;">warden connect 192.168.1.5:2222</span></div>
-          <div class="mt-3" style="color:#8b949e;"># Launch TUI</div>
-          <div><span style="color:#3fb950;">$ </span><span style="color:#c9d1d9;">warden tui --port 2222</span></div>
+      <section class="fade-up py-12" style="animation-delay: 0.22s">
+        <div class="mb-5 flex items-end justify-between gap-4">
+          <h2 class="text-2xl font-bold tracking-[-0.03em]">stack</h2>
+          <p class="text-sm text-slate-400">
+            The stack fits on one line at every size.
+          </p>
         </div>
-        <div class="reveal reveal-delay-2 text-center text-sm mt-6" style="color:#8b949e;">
-          Or install via shell script:
-          <br>
-          <code style="background:#1c2128; padding:0.25rem 0.5rem; border-radius:4px; font-size:0.75rem; display:inline-block; margin-top:0.5rem; border:1px solid #30363d; transition:border-color 0.2s ease;" class="hover-lift" onmouseover="this.style.borderColor='#58a6ff44'" onmouseout="this.style.borderColor='#30363d'">curl -fsSL https://github.com/const-nishant/Warden/releases/latest/download/install.sh | bash</code>
+        <div
+          class="brutal space-y-4 p-5 sm:p-6"
+        >
+          <div
+            class="grid gap-2 sm:grid-cols-[6rem_1fr_auto] sm:items-center sm:gap-4"
+          >
+            <span
+              class="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-slate-400"
+              >identity</span
+            >
+            <div class="stack-bar bg-sky-500"></div>
+            <span class="font-mono text-xs text-slate-400">Ed25519</span>
+          </div>
+          <div
+            class="grid gap-2 sm:grid-cols-[6rem_1fr_auto] sm:items-center sm:gap-4"
+          >
+            <span
+              class="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-slate-400"
+              >discovery</span
+            >
+            <div class="stack-bar bg-slate-100"></div>
+            <span class="font-mono text-xs text-slate-400">Kademlia DHT</span>
+          </div>
+          <div
+            class="grid gap-2 sm:grid-cols-[6rem_1fr_auto] sm:items-center sm:gap-4"
+          >
+            <span
+              class="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-slate-400"
+              >nat</span
+            >
+            <div class="stack-bar bg-slate-500"></div>
+            <span class="font-mono text-xs text-slate-400">DCUtR + Relay</span>
+          </div>
+          <div
+            class="grid gap-2 sm:grid-cols-[6rem_1fr_auto] sm:items-center sm:gap-4"
+          >
+            <span
+              class="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-slate-400"
+              >transport</span
+            >
+            <div class="stack-bar bg-sky-500"></div>
+            <span class="font-mono text-xs text-slate-400">SSH / russh</span>
+          </div>
+          <div
+            class="grid gap-2 sm:grid-cols-[6rem_1fr_auto] sm:items-center sm:gap-4"
+          >
+            <span
+              class="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-slate-400"
+              >protocol</span
+            >
+            <div class="stack-bar bg-slate-100"></div>
+            <span class="font-mono text-xs text-slate-400">Protobuf</span>
+          </div>
+          <div
+            class="grid gap-2 sm:grid-cols-[6rem_1fr_auto] sm:items-center sm:gap-4"
+          >
+            <span
+              class="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-slate-400"
+              >storage</span
+            >
+            <div class="stack-bar bg-slate-500"></div>
+            <span class="font-mono text-xs text-slate-400">SQLite</span>
+          </div>
+        </div>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <span
+            class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
+            >Rust</span
+          >
+          <span
+            class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
+            >libp2p</span
+          >
+          <span
+            class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
+            >russh</span
+          >
+          <span
+            class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
+            >Protobuf</span
+          >
+          <span
+            class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
+            >ratatui</span
+          >
+          <span
+            class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
+            >SQLite</span
+          >
         </div>
       </section>
 
-      <!-- Commands -->
-      <section class="max-w-4xl mx-auto px-6 py-24 section-link" id="commands">
-        <h2 class="text-2xl font-semibold mb-8 text-center reveal" style="color:#c9d1d9;">Commands</h2>
-        <div class="reveal" style="border:1px solid #30363d; border-radius:8px; overflow:hidden;">
-          <table class="w-full text-sm">
+      <section
+        id="commands"
+        class="fade-up py-12"
+        style="animation-delay: 0.26s"
+      >
+        <h2 class="mb-5 text-2xl font-bold tracking-[-0.03em]">commands</h2>
+        <div class="brutal overflow-x-auto bg-slate-900/95">
+          <table class="min-w-[44rem] w-full border-collapse text-sm">
             <thead>
-              <tr style="background:#161b22; border-bottom:1px solid #30363d;">
-                <th class="text-left px-5 py-3 font-semibold" style="color:#8b949e;">Command</th>
-                <th class="text-left px-5 py-3 font-semibold" style="color:#8b949e;">Description</th>
+              <tr class="border-b border-slate-700">
+                <th
+                  class="px-4 py-3 text-left font-mono text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400"
+                >
+                  command
+                </th>
+                <th
+                  class="px-4 py-3 text-left font-mono text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400"
+                >
+                  what it does
+                </th>
               </tr>
             </thead>
-            <tbody style="color:#c9d1d9;">
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">identity init</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Generate and save a new Ed25519 keypair</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">identity show</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Display your PeerID</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">listen --port &lt;n&gt;</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Start SSH chat server</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">connect &lt;addr&gt;</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Connect to a remote peer</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">daemon</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Full node: SSH + DHT + relay + persistence</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">tui --port &lt;n&gt;</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Launch terminal UI</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">contacts list|add|remove</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Manage contacts</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">history &lt;peer_id&gt;</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">View message history</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">outbox send &lt;peer&gt; &lt;msg&gt;</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Queue offline message</td></tr>
-              <tr class="reveal"><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">groups create|list|members|send</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Group chat management</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <!-- Architecture Deep Dive -->
-      <section class="max-w-4xl mx-auto px-6 py-24 section-link" id="architecture">
-        <h2 class="text-2xl font-semibold mb-8 text-center reveal" style="color:#c9d1d9;">Architecture</h2>
-        <div class="reveal" style="border:1px solid #30363d; border-radius:8px; overflow:hidden;">
-          <table class="w-full text-sm">
-            <thead>
-              <tr style="background:#161b22; border-bottom:1px solid #30363d;">
-                <th class="text-left px-5 py-3 font-semibold" style="color:#8b949e;">Layer</th>
-                <th class="text-left px-5 py-3 font-semibold" style="color:#8b949e;">Technology</th>
-                <th class="text-left px-5 py-3 font-semibold" style="color:#8b949e;">Role</th>
+            <tbody class="divide-y divide-slate-800">
+              <tr>
+                <td class="px-4 py-3 font-mono text-xs text-sky-400">
+                  identity init
+                </td>
+                <td class="px-4 py-3 text-slate-400">
+                  generate a new Ed25519 keypair
+                </td>
               </tr>
-            </thead>
-            <tbody style="color:#c9d1d9;">
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-semibold" style="color:#c9d1d9;">Identity</td><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">Ed25519</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Keypair, PeerID = base58(SHA-256(pubkey))</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-semibold" style="color:#c9d1d9;">Discovery</td><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">Kademlia DHT</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">libp2p maps PeerID to multiaddr</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-semibold" style="color:#c9d1d9;">NAT</td><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">DCUtR + Relay</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Hole-punching with relay fallback</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-semibold" style="color:#c9d1d9;">Transport</td><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">SSH / russh</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Embedded server, subsystem "chat"</td></tr>
-              <tr style="border-bottom:1px solid #161b22;" class="reveal"><td class="px-5 py-2.5 font-semibold" style="color:#c9d1d9;">Protocol</td><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">Protobuf</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Framed ChatFrame messages</td></tr>
-              <tr class="reveal"><td class="px-5 py-2.5 font-semibold" style="color:#c9d1d9;">Storage</td><td class="px-5 py-2.5 font-mono text-xs" style="color:#58a6ff;">SQLite</td><td class="px-5 py-2.5 text-sm" style="color:#8b949e;">Encrypted local database</td></tr>
+              <tr>
+                <td class="px-4 py-3 font-mono text-xs text-sky-400">
+                  listen --port &lt;n&gt;
+                </td>
+                <td class="px-4 py-3 text-slate-400">start SSH chat server</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 font-mono text-xs text-sky-400">
+                  connect &lt;addr&gt;
+                </td>
+                <td class="px-4 py-3 text-slate-400">
+                  connect to a remote peer
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 font-mono text-xs text-sky-400">daemon</td>
+                <td class="px-4 py-3 text-slate-400">
+                  full node: SSH + DHT + relay + persistence
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 font-mono text-xs text-sky-400">
+                  tui --port &lt;n&gt;
+                </td>
+                <td class="px-4 py-3 text-slate-400">
+                  launch terminal UI with command palette
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 font-mono text-xs text-sky-400">
+                  /connect
+                </td>
+                <td class="px-4 py-3 text-slate-400">
+                  (in TUI) connect to a peer
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 font-mono text-xs text-sky-400">
+                  /group create|add|list
+                </td>
+                <td class="px-4 py-3 text-slate-400">
+                  (in TUI) group management
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 font-mono text-xs text-sky-400">
+                  contacts · history · outbox · groups
+                </td>
+                <td class="px-4 py-3 text-slate-400">
+                  manage contacts, messages, offline delivery, groups
+                </td>
+              </tr>
             </tbody>
           </table>
-        </div>
-        <div class="flex flex-wrap justify-center gap-3 mt-8 reveal">
-          <span style="background:#161b22; border:1px solid #30363d; border-radius:20px; padding:0.25rem 0.875rem; font-size:0.75rem; color:#8b949e;" class="badge-pill">Rust</span>
-          <span style="background:#161b22; border:1px solid #30363d; border-radius:20px; padding:0.25rem 0.875rem; font-size:0.75rem; color:#8b949e;" class="badge-pill">libp2p</span>
-          <span style="background:#161b22; border:1px solid #30363d; border-radius:20px; padding:0.25rem 0.875rem; font-size:0.75rem; color:#8b949e;" class="badge-pill">russh</span>
-          <span style="background:#161b22; border:1px solid #30363d; border-radius:20px; padding:0.25rem 0.875rem; font-size:0.75rem; color:#8b949e;" class="badge-pill">Protocol Buffers</span>
-          <span style="background:#161b22; border:1px solid #30363d; border-radius:20px; padding:0.25rem 0.875rem; font-size:0.75rem; color:#8b949e;" class="badge-pill">ratatui</span>
-          <span style="background:#161b22; border:1px solid #30363d; border-radius:20px; padding:0.25rem 0.875rem; font-size:0.75rem; color:#8b949e;" class="badge-pill">SQLite</span>
-        </div>
-      </section>
-
-      <!-- Security -->
-      <section class="max-w-4xl mx-auto px-6 py-24 section-link" id="security">
-        <h2 class="text-2xl font-semibold mb-8 text-center reveal" style="color:#c9d1d9;">Security</h2>
-        <div class="grid sm:grid-cols-2 gap-4">
-          <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1.25rem;" class="grid-card reveal reveal-delay-1">
-            <div class="flex items-center gap-2 mb-2">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-              <h3 class="text-sm font-semibold" style="color:#c9d1d9;">No shell access</h3>
-            </div>
-            <p class="text-sm leading-relaxed" style="color:#8b949e;">SSH server restricted to <code class="font-mono text-xs">chat</code> subsystem only — no shell, exec, or port forwarding.</p>
-          </div>
-          <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1.25rem;" class="grid-card reveal reveal-delay-2">
-            <div class="flex items-center gap-2 mb-2">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-              <h3 class="text-sm font-semibold" style="color:#c9d1d9;">TOFU host keys</h3>
-            </div>
-            <p class="text-sm leading-relaxed" style="color:#8b949e;">Trust On First Use with known_hosts file for MITM detection.</p>
-          </div>
-          <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1.25rem;" class="grid-card reveal reveal-delay-3">
-            <div class="flex items-center gap-2 mb-2">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/></svg>
-              <h3 class="text-sm font-semibold" style="color:#c9d1d9;">Allowlist contacts</h3>
-            </div>
-            <p class="text-sm leading-relaxed" style="color:#8b949e;">Only known peers can connect. No unsolicited messages.</p>
-          </div>
-          <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1.25rem;" class="grid-card reveal reveal-delay-4">
-            <div class="flex items-center gap-2 mb-2">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-              <h3 class="text-sm font-semibold" style="color:#c9d1d9;">Encrypted at rest</h3>
-            </div>
-            <p class="text-sm leading-relaxed" style="color:#8b949e;">Local SQLite storage is encrypted. Your data stays yours.</p>
+          <div class="border-t border-slate-800 px-4 py-2 font-mono text-[11px] text-slate-500">
+            → 8 commands available
           </div>
         </div>
       </section>
 
+      <section id="install" class="fade-up py-12" style="animation-delay: 0.3s">
+        <h2 class="mb-5 text-2xl font-bold tracking-[-0.03em]">install</h2>
+        <div class="brutal bg-slate-900/95 p-5 sm:p-6">
+
+          <div class="mb-3 text-[11px] uppercase tracking-[0.2em] text-slate-500">cargo</div>
+          <div class="code-block text-slate-300">
+            <span class="text-sky-400">$</span> cargo install warden --git https://github.com/const-nishant/Warden
+            <button class="copy-btn" onclick="copy(this)" data-cmd="cargo install warden --git https://github.com/const-nishant/Warden">copy</button>
+          </div>
+
+          <div class="mt-5 mb-3 text-[11px] uppercase tracking-[0.2em] text-slate-500">build from source</div>
+          <div class="code-block text-slate-400">
+            <span class="text-sky-400">$</span> git clone https://github.com/const-nishant/Warden.git && cd Warden && cargo build --release
+            <button class="copy-btn" onclick="copy(this)" data-cmd="git clone https://github.com/const-nishant/Warden.git && cd Warden && cargo build --release">copy</button>
+          </div>
+
+          <div class="mt-6 mb-3 text-[11px] uppercase tracking-[0.2em] text-slate-500">quick start</div>
+
+          <div class="code-block text-slate-300">
+            <span class="text-sky-400">$</span> warden identity init
+            <button class="copy-btn" onclick="copy(this)" data-cmd="warden identity init">copy</button>
+          </div>
+          <div class="pl-7 mt-1 font-mono text-[12px] text-sky-400">→ PeerID: 12D3KooW...</div>
+
+          <div class="code-block text-slate-300 mt-2">
+            <span class="text-sky-400">$</span> warden tui --port 2222
+            <button class="copy-btn" onclick="copy(this)" data-cmd="warden tui --port 2222">copy</button>
+          </div>
+
+          <div class="mt-4 font-mono text-[12px] text-slate-500">
+            # press <span class="brutal-sm inline-block px-1.5 align-middle text-slate-100 text-[11px]">/</span> for commands
+          </div>
+
+        </div>
+        <div class="mt-3 flex items-center gap-2 font-mono text-[11px] text-slate-600">
+          <span class="status-dot" style="width:5px;height:5px;"></span>
+          ready to connect
+        </div>
+      </section>
+
+      <section class="fade-up py-12" style="animation-delay: 0.34s">
+        <h2 class="mb-5 text-2xl font-bold tracking-[-0.03em]">security</h2>
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <article class="brutal-sm bg-slate-900 p-4">
+            <h3 class="mb-2 flex items-center gap-2 font-bold"><span class="security-dot" style="background:#22c55e;"></span> Subsystem-Only</h3>
+            <p class="text-sm leading-6 text-slate-400">
+              SSH restricted to
+              <span class="font-mono text-xs text-slate-100">chat</span>
+              — no shell, exec, or port forwarding.
+            </p>
+          </article>
+          <article class="brutal-sm bg-slate-900 p-4">
+            <h3 class="mb-2 flex items-center gap-2 font-bold"><span class="security-dot" style="background:#3b82f6;"></span> TOFU</h3>
+            <p class="text-sm leading-6 text-slate-400">
+              Trust On First Use. known_hosts file for MITM detection.
+            </p>
+          </article>
+          <article class="brutal-sm bg-slate-900 p-4">
+            <h3 class="mb-2 flex items-center gap-2 font-bold"><span class="security-dot" style="background:#eab308;"></span> Allowlist</h3>
+            <p class="text-sm leading-6 text-slate-400">
+              Only known peers can connect. No spam.
+            </p>
+          </article>
+          <article class="brutal-sm bg-slate-900 p-4">
+            <h3 class="mb-2 flex items-center gap-2 font-bold"><span class="security-dot" style="background:#a855f7;"></span> Encrypted at Rest</h3>
+            <p class="text-sm leading-6 text-slate-400">
+              Local SQLite encrypted. Your data stays yours.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <footer
+        class="fade-up flex flex-col gap-4 border-t border-slate-800 py-6 text-sm text-slate-400 md:flex-row md:items-center md:justify-between"
+        style="animation-delay: 0.38s"
+      >
+        <div class="flex flex-wrap items-center gap-3">
+          <span>Built with Rust</span>
+          <span>·</span>
+          <a href="https://github.com/const-nishant/Warden/blob/main/LICENSE" class="transition-colors hover:text-slate-100">MIT License</a>
+        </div>
+        <div class="flex flex-wrap items-center gap-4">
+          <a
+            href="https://github.com/const-nishant/Warden"
+            class="transition-colors hover:text-slate-100"
+            >GitHub</a
+          >
+          <a
+            href="https://github.com/const-nishant/Warden/issues"
+            class="transition-colors hover:text-slate-100"
+            >Issues</a
+          >
+          <span>v0.2.0</span>
+        </div>
+      </footer>
     </main>
 
-    <!-- Footer -->
-    <footer style="border-top:1px solid #30363d; padding:2rem 0; margin-top:2rem;">
-      <div class="max-w-5xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm" style="color:#8b949e;">
-        <div class="flex items-center gap-4">
-          <span>Built with Rust</span>
-          <span aria-hidden="true">·</span>
-          <span>MIT License</span>
-        </div>
-        <div class="flex items-center gap-4">
-          <a href="https://github.com/const-nishant/Warden" class="no-underline hover-lift" style="color:inherit;">GitHub</a>
-          <a href="https://github.com/const-nishant/Warden/issues" class="no-underline hover-lift" style="color:inherit;">Issues</a>
-          <a href="https://github.com/const-nishant/Warden/discussions" class="no-underline hover-lift" style="color:inherit;">Discussions</a>
-        </div>
-      </div>
-    </footer>
-
-  </div>
-
-  <script>
-    // Intersection Observer — reveal elements on scroll
-    const revealObserver = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          entry.target.classList.add('visible');
-        }
-      });
-    }, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
-
-    document.querySelectorAll('.reveal').forEach(el => revealObserver.observe(el));
-
-    // Active nav link tracking
-    const navLinks = document.querySelectorAll('.nav-link');
-    const sections = document.querySelectorAll('.section-link');
-
-    const navObserver = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          const id = entry.target.getAttribute('id');
-          navLinks.forEach(link => {
-            link.classList.remove('active');
-            if (link.getAttribute('href') === '#' + id) {
-              link.classList.add('active');
+    <script>
+      const observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              entry.target.style.animationPlayState = "running";
+              observer.unobserve(entry.target);
             }
-          });
-        }
-      });
-    }, { threshold: 0.3, rootMargin: '-80px 0px 0px 0px' });
+          }
+        },
+        { threshold: 0.12 },
+      );
 
-    sections.forEach(section => navObserver.observe(section));
-
-    // Smooth anchor scroll (polyfill for older browsers)
-    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-      anchor.addEventListener('click', function(e) {
-        const target = document.querySelector(this.getAttribute('href'));
-        if (target) {
-          e.preventDefault();
-          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
+      document.querySelectorAll(".fade-up").forEach((el) => {
+        el.style.animationPlayState = "paused";
+        observer.observe(el);
       });
-    });
-  </script>
-</body>
+
+      function copy(btn) {
+        const cmd = btn.getAttribute("data-cmd");
+        if (!cmd) return;
+        navigator.clipboard.writeText(cmd).then(() => {
+          btn.textContent = "done";
+          btn.classList.add("done");
+          setTimeout(() => {
+            btn.textContent = "copy";
+            btn.classList.remove("done");
+          }, 1800);
+        }).catch(() => {});
+      }
+    </script>
+  </body>
 </html>
