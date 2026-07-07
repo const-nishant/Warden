@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Warden — p2p chat over ssh</title>
+    <title>Warden — p2p chat over SSH</title>
     <meta
       name="description"
-      content="Decentralized chat. Messages travel directly between peers over SSH. No servers. Your keypair is your identity."
+      content="Decentralized chat over SSH with DHT peer discovery. No servers, no signups — your keypair is your identity."
     />
     <link rel="icon" type="image/svg+xml" href="assets/logo.svg" />
     <link
@@ -242,14 +242,14 @@
             <span class="block">decentralized</span>
             <span class="block text-sky-400">chat over SSH</span>
           </h1>
-          <p
-            class="mt-6 max-w-xl text-base leading-7 text-slate-400 sm:text-lg"
-          >
-            Messages travel directly between peers, with no central server and
-            no central registry. Your
-            <strong class="text-slate-100">Ed25519 SSH keypair</strong>
-            is your identity.
-          </p>
+             <p
+                class="mt-6 max-w-xl text-base leading-7 text-slate-400 sm:text-lg"
+              >
+                Peer-to-peer chat with automatic discovery — no server, no sign-up, no config.
+                Your
+                <strong class="text-slate-100">Ed25519 SSH keypair</strong>
+                is your identity.
+              </p>
            <div class="mt-8 h-px w-24" style="background: linear-gradient(90deg, #38bdf8, transparent);"></div>
            <div class="mt-8 flex flex-col gap-3 sm:flex-row">
             <a
@@ -276,7 +276,7 @@
               <span class="h-2.5 w-2.5 rounded-full bg-slate-700"></span>
               <span class="h-2.5 w-2.5 rounded-full bg-slate-700"></span>
               <span class="ml-2 font-mono text-[11px] text-slate-400"
-                >warden — v0.2.0</span
+                >warden — v0.3.1</span
               >
             </div>
             <div
@@ -287,26 +287,30 @@
                 ><span class="break-all">warden identity init</span>
               </div>
               <div class="pl-5 text-slate-400">
-                → PeerID: <span class="text-sky-400">12D3KooW...</span>
+                → PeerID: <span class="text-sky-400">kMJ67j13dD...</span>
               </div>
               <div class="flex gap-2 pt-1">
                 <span class="text-sky-400">$</span
-                ><span class="break-all">warden tui --port 2222</span>
+                ><span class="break-all">warden tui</span>
+              </div>
+              <div class="pl-5 text-slate-400">
+                <span class="text-sky-400">DHT</span> node ready.
+                <span class="text-sky-400">mDNS</span> discovering LAN...
               </div>
               <pre
                 class="overflow-x-auto rounded-none border border-slate-800 bg-slate-950 p-3 text-slate-400"
               >
-╭──────────────────────────────╮
-│  ○ @alice        ● online    │
-│  ○ @bob          ○ offline   │
-│  # dev-group     ● online    │
-╰──────────────────────────────╯</pre
+╭──────────────────────────────────╮
+│  ● @alice              ● online │
+│  ○ @bob                ○ offline│
+│  # dev-group           ● online │
+╰──────────────────────────────────╯</pre
               >
               <div class="flex gap-2 pt-1">
                 <span class="text-sky-400">$</span
-                ><span>/connect 192.168.1.5:2222</span>
+                ><span>/connect kMJ67j13dD<span class="text-slate-500">uMCC...</span></span>
               </div>
-              <div class="pl-5 text-sky-400">connected to 192.168.1.5:2222</div>
+              <div class="pl-5 text-sky-400">→ resolved via DHT, connected</div>
               <div class="flex gap-2 pt-1">
                 <span class="text-sky-400">$</span
                 ><span>hey, what's up? <span class="cursor">▊</span></span>
@@ -328,14 +332,17 @@
               Direct peer connections with a hardened SSH tunnel.
             </h2>
             <p class="mt-4 max-w-xl text-sm leading-6 text-slate-400">
-              Discovery, transport, and framing stay separate: peers find each
-              other through the DHT, then exchange protobuf-framed chat messages
-              over SSH.
+              Peers discover each other automatically via mDNS (LAN) or the Kademlia DHT (WAN).
+              Messages travel over SSH with protobuf framing. No servers, no config.
             </p>
             <div class="mt-6 flex flex-wrap gap-2">
               <span
                 class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
-                >DHT discovery</span
+                >mDNS auto-discovery</span
+              >
+              <span
+                class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
+                >Kademlia DHT</span
               >
               <span
                 class="brutal-sm bg-slate-900 px-3 py-1 text-xs font-mono text-slate-100"
@@ -363,10 +370,10 @@
           <article class="brutal-hover brutal bg-slate-900/95 p-6">
             <div class="mb-1 text-4xl font-black text-sky-400">01</div>
             <div class="deco-bar mb-3"></div>
-              <h2 class="mb-2 text-lg font-bold">No Server</h2>
+              <h2 class="mb-2 text-lg font-bold">Zero Config</h2>
             <p class="text-sm leading-6 text-slate-400">
-              Messages go directly between peers over SSH. Discovery uses a
-              Kademlia DHT.
+              mDNS discovers peers on LAN automatically. DHT + peer persistence
+              for WAN. No bootstrap flags needed.
             </p>
           </article>
           <article class="brutal-hover brutal bg-slate-900/95 p-6">
@@ -522,46 +529,34 @@
               </tr>
               <tr>
                 <td class="px-4 py-3 font-mono text-xs text-sky-400">
-                  listen --port &lt;n&gt;
-                </td>
-                <td class="px-4 py-3 text-slate-400">start SSH chat server</td>
-              </tr>
-              <tr>
-                <td class="px-4 py-3 font-mono text-xs text-sky-400">
-                  connect &lt;addr&gt;
+                  tui
                 </td>
                 <td class="px-4 py-3 text-slate-400">
-                  connect to a remote peer
-                </td>
-              </tr>
-              <tr>
-                <td class="px-4 py-3 font-mono text-xs text-sky-400">daemon</td>
-                <td class="px-4 py-3 text-slate-400">
-                  full node: SSH + DHT + relay + persistence
+                  launch TUI with built-in DHT + mDNS + SSH server
                 </td>
               </tr>
               <tr>
                 <td class="px-4 py-3 font-mono text-xs text-sky-400">
-                  tui --port &lt;n&gt;
+                  daemon
                 </td>
                 <td class="px-4 py-3 text-slate-400">
-                  launch terminal UI with command palette
+                  headless full node: SSH + DHT + outbox persistence
                 </td>
               </tr>
               <tr>
                 <td class="px-4 py-3 font-mono text-xs text-sky-400">
-                  /connect
+                  connect &lt;peer_id|addr&gt;
                 </td>
                 <td class="px-4 py-3 text-slate-400">
-                  (in TUI) connect to a peer
+                  resolve PeerID via DHT or connect to raw IP:port
                 </td>
               </tr>
               <tr>
                 <td class="px-4 py-3 font-mono text-xs text-sky-400">
-                  /group create|add|list
+                  /connect &lt;peer_id&gt;
                 </td>
                 <td class="px-4 py-3 text-slate-400">
-                  (in TUI) group management
+                  (in TUI) auto-resolve PeerID via running DHT node
                 </td>
               </tr>
               <tr>
@@ -569,7 +564,7 @@
                   contacts · history · outbox · groups
                 </td>
                 <td class="px-4 py-3 text-slate-400">
-                  manage contacts, messages, offline delivery, groups
+                  contacts, message history, offline delivery, group chat
                 </td>
               </tr>
             </tbody>
@@ -602,12 +597,13 @@
             <span class="text-sky-400">$</span> warden identity init
             <button class="copy-btn" onclick="copy(this)" data-cmd="warden identity init">copy</button>
           </div>
-          <div class="pl-7 mt-1 font-mono text-[12px] text-sky-400">→ PeerID: 12D3KooW...</div>
+          <div class="pl-7 mt-1 font-mono text-[12px] text-sky-400">→ PeerID: kMJ67j13dD...</div>
 
           <div class="code-block text-slate-300 mt-2">
-            <span class="text-sky-400">$</span> warden tui --port 2222
-            <button class="copy-btn" onclick="copy(this)" data-cmd="warden tui --port 2222">copy</button>
+            <span class="text-sky-400">$</span> warden tui
+            <button class="copy-btn" onclick="copy(this)" data-cmd="warden tui">copy</button>
           </div>
+          <div class="pl-7 mt-1 font-mono text-[12px] text-sky-400">→ DHT + mDNS auto-started, SSH server on :2222</div>
 
           <div class="mt-4 font-mono text-[12px] text-slate-500">
             # press <span class="brutal-sm inline-block px-1.5 align-middle text-slate-100 text-[11px]">/</span> for commands
@@ -672,7 +668,7 @@
             class="transition-colors hover:text-slate-100"
             >Issues</a
           >
-          <span>v0.2.0</span>
+          <span>v0.3.1</span>
         </div>
       </footer>
     </main>
