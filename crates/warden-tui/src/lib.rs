@@ -856,6 +856,31 @@ async fn resolve_via_node(
     let target = warden_core::PeerId::new(peer_id);
     let addrs = node.resolve(target).await?;
 
+    // Persist resolved addresses as known peers
+    {
+        let dir = home::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".warden");
+        let path = dir.join("known_peers");
+        let _ = std::fs::create_dir_all(&dir);
+        let mut existing: Vec<String> = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        for a in &addrs {
+            let s = a.to_string();
+            if !existing.contains(&s) {
+                existing.push(s);
+            }
+        }
+        if let Ok(mut f) = std::fs::File::create(&path) {
+            use std::io::Write;
+            let _ = existing.iter().try_for_each(|a| writeln!(f, "{a}"));
+        }
+    }
+
     let mut fallback = None;
     for addr in &addrs {
         if let Some(sa) = multiaddr_to_socketaddr(addr) {

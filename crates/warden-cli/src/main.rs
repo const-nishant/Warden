@@ -197,6 +197,39 @@ fn known_hosts_path() -> anyhow::Result<std::path::PathBuf> {
     Ok(warden_dir()?.join("known_hosts.json"))
 }
 
+fn known_peers_path() -> anyhow::Result<std::path::PathBuf> {
+    Ok(warden_dir()?.join("known_peers.json"))
+}
+
+fn load_known_peers() -> Vec<String> {
+    let path = match known_peers_path() {
+        Ok(p) => p,
+        _ => return vec![],
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(s) => s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
+        _ => vec![],
+    }
+}
+
+fn save_known_peers(addrs: &[String]) {
+    let path = match known_peers_path() {
+        Ok(p) => p,
+        _ => return,
+    };
+    let mut existing: Vec<String> = load_known_peers();
+    for addr in addrs {
+        let a = addr.trim().to_string();
+        if !a.is_empty() && !existing.contains(&a) {
+            existing.push(a);
+        }
+    }
+    if let Ok(mut f) = std::fs::File::create(&path) {
+        use std::io::Write;
+        let _ = existing.iter().try_for_each(|a| writeln!(f, "{a}"));
+    }
+}
+
 async fn connect_with_default_known_hosts(addr: &str) -> anyhow::Result<warden_transport::ChatSession> {
     let known_hosts = warden_transport::KnownHosts::new(known_hosts_path()?);
     Ok(warden_transport::connect_with_known_hosts(addr, known_hosts).await?)
@@ -262,6 +295,10 @@ async fn resolve_peer_id(
     for addr in &addrs {
         println!("  {addr}");
     }
+
+    // Persist resolved addresses as known peers for future auto-bootstrap
+    let known: Vec<String> = addrs.iter().map(|a| a.to_string()).collect();
+    save_known_peers(&known);
 
     let mut fallback = None;
     for addr in &addrs {
@@ -679,7 +716,16 @@ async fn main() -> anyhow::Result<()> {
             let keypair = warden_identity::IdentityKeypair::load(identity_path()?)?;
             let db = open_db();
 
-            // Start DHT node
+            // Auto-load known peers as bootstrap if none specified
+            let mut bootstrap = bootstrap;
+            if bootstrap.is_empty() {
+                let known = load_known_peers();
+                if !known.is_empty() {
+                    println!("Auto-bootstrapping from {} known peer(s)", known.len());
+                    bootstrap = known;
+                }
+            }
+
             let dht_listen: libp2p::Multiaddr =
                 format!("/ip4/0.0.0.0/tcp/{dht_port}").parse().unwrap();
             let bootstrap_addrs = parse_multiaddrs(&bootstrap)?;
@@ -711,6 +757,12 @@ async fn main() -> anyhow::Result<()> {
                         break;
                     }
                 }
+            }
+
+            // Persist our listening addresses as known peers
+            if let Ok(addrs) = dht_node.listening_addrs().await {
+                let known: Vec<String> = addrs.iter().map(|a| a.to_string()).collect();
+                save_known_peers(&known);
             }
 
             let _ = dht_node.announce().await;
@@ -855,6 +907,16 @@ async fn main() -> anyhow::Result<()> {
         Command::Tui { port, dht_port, bootstrap, relay } => {
             let keypair = warden_identity::IdentityKeypair::load(identity_path()?)?;
             let db = open_db()?;
+
+            // Auto-load known peers as bootstrap if none specified
+            let mut bootstrap = bootstrap;
+            if bootstrap.is_empty() {
+                let known = load_known_peers();
+                if !known.is_empty() {
+                    println!("Auto-bootstrapping from {} known peer(s)", known.len());
+                    bootstrap = known;
+                }
+            }
             let bootstrap_addrs = parse_multiaddrs(&bootstrap)?;
             let relay_addrs = parse_multiaddrs(&relay)?;
 
@@ -896,6 +958,12 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            // Persist our listening addresses as known peers
+            if let Ok(addrs) = dht_node.listening_addrs().await {
+                let known: Vec<String> = addrs.iter().map(|a| a.to_string()).collect();
+                save_known_peers(&known);
+            }
+
             let _ = dht_node.announce().await;
             println!("DHT node ready. PeerID: {}", keypair.peer_id());
 
