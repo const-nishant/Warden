@@ -228,7 +228,11 @@ async fn resolve_peer_id(
     let bootstrap_addrs = parse_multiaddrs(bootstrap)?;
     let relay_addrs = parse_multiaddrs(relay)?;
 
-    let node = warden_discovery::DiscoveryNode::new(&keypair, vec![]).await?;
+    let node = warden_discovery::DiscoveryNode::new(
+        &keypair,
+        vec!["/ip4/127.0.0.1/tcp/0".parse().unwrap()],
+    )
+    .await?;
 
     for relay_addr in &relay_addrs {
         println!("Connecting to relay {relay_addr}...");

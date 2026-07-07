@@ -26,7 +26,7 @@ futures = "0.3"
 bytes = "1"
 russh-cryptovec = "0.7"
 async-trait = "0.1"
-libp2p = { version = "0.56", default-features = false, features = ["kad", "identify", "ping", "tcp", "dns", "noise", "yamux", "macros", "tokio", "relay", "dcutr", "autonat", "upnp"] }
+libp2p = { version = "0.56", default-features = false, features = ["kad", "identify", "ping", "tcp", "dns", "noise", "yamux", "macros", "tokio", "relay", "dcutr", "autonat", "upnp", "mdns"] }
 libp2p-identity = "0.2"
 ratatui = "0.29"
 crossterm = "0.28"

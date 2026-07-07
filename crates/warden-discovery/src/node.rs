@@ -6,7 +6,7 @@ use libp2p::kad::{
     self, store::MemoryStore, store::RecordStore, QueryId, QueryResult, Record, RecordKey,
 };
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
-use libp2p::{identify, identity as libp2p_identity, ping, Multiaddr};
+use libp2p::{identify, identity as libp2p_identity, mdns, ping, Multiaddr};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
@@ -25,6 +25,7 @@ struct Behaviour {
     dcutr: libp2p::dcutr::Behaviour,
     autonat: libp2p::autonat::v1::Behaviour,
     upnp: libp2p::upnp::tokio::Behaviour,
+    mdns: mdns::tokio::Behaviour,
 }
 
 enum Command {
@@ -97,6 +98,9 @@ impl EventLoop {
                 BehaviourEvent::Identify(e) => {
                     self.handle_identify_event(e);
                 }
+                BehaviourEvent::Mdns(e) => {
+                    self.handle_mdns_event(e);
+                }
                 BehaviourEvent::RelayClient(e) => {
                     self.handle_relay_client_event(e);
                 }
@@ -168,6 +172,25 @@ impl EventLoop {
                 warn!("DHT bootstrap failed: {e}");
             }
             _ => {}
+        }
+    }
+
+    fn handle_mdns_event(&mut self, event: mdns::Event) {
+        match event {
+            mdns::Event::Discovered(peers) => {
+                for (peer_id, addr) in peers {
+                    info!("mDNS discovered peer {peer_id} at {addr}");
+                    self.swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, addr);
+                }
+            }
+            mdns::Event::Expired(peers) => {
+                for (peer_id, _addr) in peers {
+                    info!("mDNS peer expired: {peer_id}");
+                }
+            }
         }
     }
 
@@ -561,10 +584,14 @@ impl DiscoveryNode {
                             libp2p::autonat::v1::Config::default(),
                         ),
                         upnp: libp2p::upnp::tokio::Behaviour::default(),
+                        mdns: mdns::tokio::Behaviour::new(
+                            mdns::Config::default(),
+                            key.public().to_peer_id(),
+                        )
+                        .expect("mDNS should initialize"),
                     }
                 },
-            )
-            .map_err(|e| DiscoveryError::Dht(e.to_string()))?
+            )?
             .with_swarm_config(|c: libp2p::swarm::Config| {
                 c.with_idle_connection_timeout(Duration::from_secs(120))
             })
