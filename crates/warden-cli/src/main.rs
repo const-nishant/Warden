@@ -56,17 +56,17 @@ enum Command {
     },
     /// Launch the terminal UI (TUI) with built-in DHT node
     Tui {
-        /// Port for SSH chat server
+        /// SSH chat server port
         #[arg(long, default_value = "2222")]
         port: u16,
-        /// Port for DHT listener (automatic if set)
-        #[arg(long = "dht-port", default_value = "3333")]
+        /// DHT listener port (0 = OS-assigned)
+        #[arg(long = "dht-port", default_value = "0", hide = true)]
         dht_port: u16,
-        /// Bootstrap peer multiaddrs for DHT resolution (can be repeated)
-        #[arg(long = "bootstrap", short)]
+        /// Bootstrap peer multiaddr (advanced)
+        #[arg(long = "bootstrap", short, hide = true)]
         bootstrap: Vec<String>,
-        /// Relay server multiaddr (can be repeated)
-        #[arg(long = "relay", short = 'r')]
+        /// Relay server multiaddr (advanced)
+        #[arg(long = "relay", short = 'r', hide = true)]
         relay: Vec<String>,
     },
     /// Outbox management (store-and-forward)
@@ -923,15 +923,7 @@ async fn main() -> anyhow::Result<()> {
             // Start DHT node
             let dht_listen: libp2p::Multiaddr =
                 format!("/ip4/0.0.0.0/tcp/{dht_port}").parse().unwrap();
-            let dht_node = warden_discovery::DiscoveryNode::new(
-                &keypair,
-                if bootstrap_addrs.is_empty() && relay_addrs.is_empty() && dht_port > 0 {
-                    vec![dht_listen]
-                } else {
-                    vec![dht_listen]
-                },
-            )
-            .await?;
+            let dht_node = warden_discovery::DiscoveryNode::new(&keypair, vec![dht_listen]).await?;
 
             for relay_addr in &relay_addrs {
                 println!("Connecting to relay {relay_addr}...");
@@ -1383,8 +1375,9 @@ mod tests {
     #[test]
     fn cli_parses_tui_defaults() {
         let cli = super::Cli::try_parse_from(["warden", "tui"]).unwrap();
-        if let super::Command::Tui { port, .. } = cli.command {
+        if let super::Command::Tui { port, dht_port, .. } = cli.command {
             assert_eq!(port, 2222);
+            assert_eq!(dht_port, 0);
         } else {
             panic!("expected Tui command");
         }
