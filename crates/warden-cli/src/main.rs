@@ -26,10 +26,16 @@ enum Command {
         #[arg(long, default_value = "2222")]
         port: u16,
     },
-    /// Connect to a peer via SSH
+    /// Connect to a peer via SSH (accepts IP:port or PeerID with DHT resolution)
     Connect {
-        /// Peer address (IP:port)
+        /// Peer address (IP:port) or PeerID (base58, resolved via DHT)
         addr: String,
+        /// Bootstrap peer multiaddrs for DHT resolution (can be repeated)
+        #[arg(long = "bootstrap", short)]
+        bootstrap: Vec<String>,
+        /// Relay server multiaddr to use for DHT connectivity (can be repeated)
+        #[arg(long = "relay", short = 'r')]
+        relay: Vec<String>,
     },
     /// DHT peer discovery commands
     Discovery {
@@ -187,6 +193,78 @@ async fn connect_with_default_known_hosts(addr: &str) -> anyhow::Result<warden_t
     Ok(warden_transport::connect_with_known_hosts(addr, known_hosts).await?)
 }
 
+fn multiaddr_to_socketaddr(ma: &libp2p::Multiaddr) -> Option<std::net::SocketAddr> {
+    use libp2p::multiaddr::Protocol;
+    let mut ip = None;
+    let mut port = None;
+    for proto in ma.iter() {
+        match proto {
+            Protocol::Ip4(a) => ip = Some(std::net::IpAddr::V4(a)),
+            Protocol::Ip6(a) => ip = Some(std::net::IpAddr::V6(a)),
+            Protocol::Tcp(p) => port = Some(p),
+            _ => {}
+        }
+    }
+    Some(std::net::SocketAddr::new(ip?, port?))
+}
+
+async fn resolve_peer_id(
+    peer_id: &str,
+    bootstrap: &[String],
+    relay: &[String],
+) -> anyhow::Result<std::net::SocketAddr> {
+    let keypair = warden_identity::IdentityKeypair::load(identity_path()?)?;
+    let bootstrap_addrs = parse_multiaddrs(bootstrap)?;
+    let relay_addrs = parse_multiaddrs(relay)?;
+
+    let node = warden_discovery::DiscoveryNode::new(&keypair, vec![]).await?;
+
+    for relay_addr in &relay_addrs {
+        println!("Connecting to relay {relay_addr}...");
+        let _ = node.connect_relay(relay_addr.clone()).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    if !bootstrap_addrs.is_empty() {
+        println!("Bootstrapping DHT to {} peers...", bootstrap_addrs.len());
+        node.bootstrap(bootstrap_addrs).await?;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+
+    let target = warden_core::PeerId::new(peer_id);
+    println!("Resolving {target} on DHT...");
+    let addrs = node.resolve(target).await?;
+
+    println!("Found {} address(es):", addrs.len());
+    for addr in &addrs {
+        println!("  {addr}");
+    }
+
+    let mut fallback = None;
+    for addr in &addrs {
+        if let Some(sa) = multiaddr_to_socketaddr(addr) {
+            if sa.port() == 2222 {
+                println!("Resolved to {sa}");
+                return Ok(sa);
+            }
+            if fallback.is_none() {
+                fallback = Some(sa);
+            }
+        }
+    }
+
+    if let Some(sa) = fallback {
+        let ssh = std::net::SocketAddr::new(sa.ip(), 2222);
+        println!("Resolved to {} (via SSH port 2222)", sa.ip());
+        return Ok(ssh);
+    }
+
+    Err(anyhow::anyhow!(
+        "peer {peer_id} found on DHT but no valid IP:port address in {:?}",
+        addrs
+    ))
+}
+
 fn db_path() -> anyhow::Result<std::path::PathBuf> {
     Ok(warden_dir()?.join("warden.db"))
 }
@@ -311,7 +389,18 @@ async fn main() -> anyhow::Result<()> {
 
             let _ = server_task.await;
         }
-        Command::Connect { addr } => {
+        Command::Connect { addr, bootstrap, relay } => {
+            let addr = match resolve_peer_id(&addr, &bootstrap, &relay).await {
+                Ok(sa) => sa.to_string(),
+                Err(e) => {
+                    if addr.parse::<std::net::SocketAddr>().is_ok() {
+                        tracing::debug!("DHT resolution failed ({e}), using raw address");
+                        addr
+                    } else {
+                        return Err(e.into());
+                    }
+                }
+            };
             println!("Connecting to {addr}...");
             let mut session = connect_with_default_known_hosts(&addr).await?;
             let peer = session.peer_id.clone();
@@ -588,6 +677,19 @@ async fn main() -> anyhow::Result<()> {
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
 
+            // Add SSH address to DHT announcement so peers can resolve it
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if let Ok(addrs) = dht_node.listening_addrs().await {
+                for a in &addrs {
+                    if let Some(sa) = multiaddr_to_socketaddr(a) {
+                        let ssh_ma: libp2p::Multiaddr =
+                            format!("/ip4/{}/tcp/{ssh_port}", sa.ip()).parse().unwrap();
+                        let _ = dht_node.add_announce_addr(ssh_ma).await;
+                        break;
+                    }
+                }
+            }
+
             let _ = dht_node.announce().await;
 
             // Start SSH server
@@ -625,7 +727,10 @@ async fn main() -> anyhow::Result<()> {
                                 Ok(addrs) => {
                                     for addr in &addrs {
                                         tracing::info!("Outbox retry: trying to connect to {peer_id} via {addr}");
-                                        match connect_with_default_known_hosts(&addr.to_string()).await {
+                                        let addr_str = multiaddr_to_socketaddr(addr)
+                                            .map(|sa| sa.to_string())
+                            .unwrap_or_else(|| addr.to_string());
+                                        match connect_with_default_known_hosts(&addr_str).await {
                                             Ok(mut session) => {
                                                 flush_outbox_for_peer(&mut session, peer_id).await;
                                                 break;
@@ -872,7 +977,41 @@ async fn main() -> anyhow::Result<()> {
                 // Fanout to each member
                 let mut delivered = 0;
                 for m in &members {
-                    match connect_with_default_known_hosts(&m.peer_id).await {
+                    let addr = if let Ok(sa) = m.peer_id.parse::<std::net::SocketAddr>() {
+                        sa.to_string()
+                    } else {
+                        match resolve_peer_id(&m.peer_id, &[], &[]).await {
+                            Ok(sa) => sa.to_string(),
+                            Err(e) => {
+                                println!("  Could not resolve {}: {e}", m.peer_id);
+                                // Queue to outbox for offline delivery
+                                let outbox_msg = warden_storage::StoredMessage {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    conversation_id: group_id.clone(),
+                                    sender_peer_id: String::new(),
+                                    ciphertext: message.as_bytes().to_vec(),
+                                    signature: None,
+                                    frame_type: 1,
+                                    timestamp_unix_ms: now_ms,
+                                    delivered: false,
+                                };
+                                let _ = warden_storage::MessageStore::store_message(&db, outbox_msg);
+                                let entry = warden_storage::OutboxEntry {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    target_peer_id: m.peer_id.clone(),
+                                    frame_bytes: message.as_bytes().to_vec(),
+                                    created_at_ms: now_ms,
+                                    retry_count: 0,
+                                    last_attempt_ms: None,
+                                    delivered: false,
+                                };
+                                let _ = warden_storage::OutboxStore::enqueue(&db, entry);
+                                println!("  Queued for offline delivery to {}", m.peer_id);
+                                continue;
+                            }
+                        }
+                    };
+                    match connect_with_default_known_hosts(&addr).await {
                         Ok(mut session) => {
                             if session.send(Bytes::from(message.clone())).await.is_ok() {
                                 delivered += 1;
@@ -1041,7 +1180,7 @@ mod tests {
     #[test]
     fn cli_parses_connect() {
         let cli = super::Cli::try_parse_from(["warden", "connect", "127.0.0.1:2222"]).unwrap();
-        if let super::Command::Connect { addr } = cli.command {
+        if let super::Command::Connect { addr, .. } = cli.command {
             assert_eq!(addr, "127.0.0.1:2222");
         } else {
             panic!("expected Connect command");

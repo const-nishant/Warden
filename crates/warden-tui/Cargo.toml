@@ -1,11 +1,12 @@
 [package]
 name = "warden-tui"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Terminal UI for Warden P2P chat"
 
 [dependencies]
 warden-core = { path = "../warden-core" }
+warden-identity = { path = "../warden-identity" }
 warden-storage = { path = "../warden-storage" }
 warden-transport = { path = "../warden-transport" }
 tokio = { workspace = true }
@@ -15,4 +16,5 @@ bytes = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
+home = { workspace = true }
 tracing = { workspace = true }

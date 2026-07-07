@@ -4952,11 +4952,13 @@ dependencies = [
  "bytes",
  "chrono",
  "crossterm",
+ "home",
  "ratatui",
  "tokio",
  "tracing",
  "uuid",
  "warden-core",
+ "warden-identity",
  "warden-storage",
  "warden-transport",
 ]

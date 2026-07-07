@@ -1,12 +1,7 @@
-//! Terminal UI for Warden powered by `ratatui` and `crossterm`.
-//!
-//! Provides a split-pane chat interface: conversation sidebar, message
-//! view, and input bar. [`TuiApp`] manages the event loop, key handling,
-//! network polling, and rendering.
-
 use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
+use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::crossterm::ExecutableCommand;
@@ -17,6 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::Terminal;
 use tokio::sync::mpsc;
+use warden_identity::IdentityKeypair;
 use warden_storage::{ContactStore, Database, MessageStore, OutboxEntry, OutboxStore, StoredMessage, GroupStore};
 use warden_transport::{ChatSession, SessionEvent};
 
@@ -36,9 +32,19 @@ struct Conversation {
 
 const COMMANDS: &[&str] = &[
     "/connect <addr>",
-    "/group create <name>",
-    "/group add <peer_id>",
-    "/group list",
+    "/contacts add <peer_id>",
+    "/contacts list",
+    "/contacts remove <peer_id>",
+    "/groups create <name>",
+    "/groups members <group_id>",
+    "/groups list",
+    "/help",
+    "/history <peer_id>",
+    "/identity init",
+    "/identity show",
+    "/outbox send <peer_id> <msg>",
+    "/outbox list",
+    "/outbox flush",
     "/quit",
 ];
 
@@ -73,6 +79,13 @@ impl TuiApp {
             show_cmd_palette: false,
             cmd_palette_idx: 0,
         }
+    }
+
+    fn identity_path() -> std::path::PathBuf {
+        let dir = home::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".warden");
+        dir.join("identity")
     }
 
     fn start_connect_handler(&mut self) {
@@ -121,6 +134,8 @@ impl TuiApp {
         self.start_connect_handler();
         enable_raw_mode()?;
         std::io::stdout().execute(EnterAlternateScreen)?;
+        std::io::stdout().execute(ratatui::crossterm::cursor::Show)?;
+        std::io::stdout().execute(SetCursorStyle::BlinkingBar)?;
         let backend = CrosstermBackend::new(std::io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
@@ -181,7 +196,7 @@ impl TuiApp {
             self.status = format!("Connected: {peer}");
         }
 
-            let to_remove: Vec<String> = self
+        let to_remove: Vec<String> = self
             .conversations
             .iter_mut()
             .filter_map(|conv| {
@@ -225,7 +240,7 @@ impl TuiApp {
         } else if self.conversations.is_empty() {
             self.active_idx = 0;
         }
-        // Handle outbound connect results
+
         while let Ok(session) = self.connect_rx.try_recv() {
             let peer = session.peer_id.clone();
             if !self.conversations.iter().any(|c| c.peer_id == peer) {
@@ -246,7 +261,6 @@ impl TuiApp {
         let total = self.conversations.len();
         self.status = format!("{online}/{total} online | /quit: exit | j/k: nav | Enter: send");
 
-        // Load groups into sidebar if not present
         let known_groups = self.db.list_groups().unwrap_or_default();
         for group in &known_groups {
             let gid = format!("group:{}", group.id);
@@ -329,9 +343,14 @@ impl TuiApp {
                 self.running = false;
                 true
             }
+            "/help" => {
+                let names: Vec<&str> = COMMANDS.iter().map(|c| c.split(' ').next().unwrap_or(c)).collect();
+                self.status = format!("Commands: {}", names.join(", "));
+                true
+            }
             "/connect" => {
                 if parts.len() < 2 {
-                    self.status = "Usage: /connect <ip:port>".into();
+                    self.status = "Usage: /connect <addr>".into();
                 } else {
                     let addr = parts[1..].join(" ");
                     self.connect_handle.send(addr.clone()).ok();
@@ -339,15 +358,170 @@ impl TuiApp {
                 }
                 true
             }
-            "/group" => {
+            "/identity" => {
                 if parts.len() < 2 {
-                    self.status = "Usage: /group create <name> | /group add <peer_id> | /group list".into();
+                    self.status = "Usage: /identity init | /identity show".into();
+                    return true;
+                }
+                match parts[1] {
+                    "init" => {
+                        let path = Self::identity_path();
+                        if let Some(dir) = path.parent() {
+                            let _ = std::fs::create_dir_all(dir);
+                        }
+                        let keypair = IdentityKeypair::generate();
+                        match keypair.save(path) {
+                            Ok(()) => self.status = format!("Identity created! PeerID: {}", keypair.peer_id()),
+                            Err(e) => self.status = format!("Failed to create identity: {e}"),
+                        }
+                    }
+                    "show" => {
+                        match IdentityKeypair::load(Self::identity_path()) {
+                            Ok(kp) => self.status = format!("PeerID: {}", kp.peer_id()),
+                            Err(e) => self.status = format!("No identity found: {e}"),
+                        }
+                    }
+                    _ => self.status = "Usage: /identity init | /identity show".into(),
+                }
+                true
+            }
+            "/contacts" => {
+                if parts.len() < 2 {
+                    self.status = "Usage: /contacts add <peer_id> | /contacts list | /contacts remove <peer_id>".into();
+                    return true;
+                }
+                match parts[1] {
+                    "add" => {
+                        if parts.len() < 3 {
+                            self.status = "Usage: /contacts add <peer_id>".into();
+                        } else {
+                            let peer_id = parts[2];
+                            let contact = warden_storage::Contact {
+                                peer_id: peer_id.to_string(),
+                                public_key: Vec::new(),
+                                alias: None,
+                                added_at_ms: now_ms(),
+                                last_seen_ms: None,
+                            };
+                            match ContactStore::add_contact(&self.db, contact) {
+                                Ok(()) => self.status = format!("Added contact {peer_id}"),
+                                Err(e) => self.status = format!("Failed: {e}"),
+                            }
+                        }
+                    }
+                    "list" => {
+                        match ContactStore::list_contacts(&self.db) {
+                            Ok(contacts) => {
+                                if contacts.is_empty() {
+                                    self.status = "No contacts".into();
+                                } else {
+                                    let names: Vec<String> = contacts.iter().map(|c| c.peer_id.clone()).collect();
+                                    self.status = format!("Contacts: {}", names.join(", "));
+                                }
+                            }
+                            Err(e) => self.status = format!("Failed: {e}"),
+                        }
+                    }
+                    "remove" => {
+                        if parts.len() < 3 {
+                            self.status = "Usage: /contacts remove <peer_id>".into();
+                        } else {
+                            match ContactStore::remove_contact(&self.db, parts[2]) {
+                                Ok(()) => self.status = format!("Removed contact {}", parts[2]),
+                                Err(e) => self.status = format!("Failed: {e}"),
+                            }
+                        }
+                    }
+                    _ => self.status = "Usage: /contacts add | list | remove".into(),
+                }
+                true
+            }
+            "/history" => {
+                if parts.len() < 2 {
+                    self.status = "Usage: /history <peer_id>".into();
+                } else {
+                    let peer_id = parts[1];
+                    let conv_id = conversation_id(peer_id);
+                    match MessageStore::get_conversation(&self.db, &conv_id) {
+                        Ok(msgs) => {
+                            if msgs.is_empty() {
+                                self.status = format!("No messages with {peer_id}");
+                            } else {
+                                let n = msgs.len();
+                                let last = &msgs[n - 1];
+                                let text = String::from_utf8_lossy(&last.ciphertext);
+                                self.status = format!("{n} messages with {peer_id}. Last: {text}");
+                            }
+                        }
+                        Err(e) => self.status = format!("Failed: {e}"),
+                    }
+                }
+                true
+            }
+            "/outbox" => {
+                if parts.len() < 2 {
+                    self.status = "Usage: /outbox send <peer_id> <msg> | /outbox list | /outbox flush".into();
+                    return true;
+                }
+                match parts[1] {
+                    "send" => {
+                        if parts.len() < 4 {
+                            self.status = "Usage: /outbox send <peer_id> <message>".into();
+                        } else {
+                            let peer_id = parts[2];
+                            let msg_text = parts[3..].join(" ");
+                            let entry = OutboxEntry {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                target_peer_id: peer_id.to_string(),
+                                frame_bytes: msg_text.into_bytes(),
+                                created_at_ms: now_ms(),
+                                retry_count: 0,
+                                last_attempt_ms: None,
+                                delivered: false,
+                            };
+                            match OutboxStore::enqueue(&self.db, entry) {
+                                Ok(()) => self.status = format!("Queued message for {peer_id}"),
+                                Err(e) => self.status = format!("Failed: {e}"),
+                            }
+                        }
+                    }
+                    "list" => {
+                        match OutboxStore::all_pending(&self.db) {
+                            Ok(entries) => {
+                                if entries.is_empty() {
+                                    self.status = "No pending outbox messages".into();
+                                } else {
+                                    self.status = format!("{} pending message(s)", entries.len());
+                                }
+                            }
+                            Err(e) => self.status = format!("Failed: {e}"),
+                        }
+                    }
+                    "flush" => {
+                        match OutboxStore::all_pending(&self.db) {
+                            Ok(entries) => {
+                                if entries.is_empty() {
+                                    self.status = "No pending outbox messages".into();
+                                } else {
+                                    self.status = format!("{} message(s) pending. Flush happens automatically on connect.", entries.len());
+                                }
+                            }
+                            Err(e) => self.status = format!("Failed: {e}"),
+                        }
+                    }
+                    _ => self.status = "Usage: /outbox send | list | flush".into(),
+                }
+                true
+            }
+            "/groups" => {
+                if parts.len() < 2 {
+                    self.status = "Usage: /groups create | members | list".into();
                     return true;
                 }
                 match parts[1] {
                     "create" => {
                         if parts.len() < 3 {
-                            self.status = "Usage: /group create <name>".into();
+                            self.status = "Usage: /groups create <name>".into();
                         } else {
                             let name = parts[2..].join(" ");
                             let id = uuid::Uuid::new_v4().to_string();
@@ -366,22 +540,20 @@ impl TuiApp {
                             }
                         }
                     }
-                    "add" => {
+                    "members" => {
                         if parts.len() < 3 {
-                            self.status = "Usage: /group add <peer_id>".into();
+                            self.status = "Usage: /groups members <group_id>".into();
                         } else {
-                            let peer_id = parts[2];
-                            if let Some(conv) = self.conversations.get(self.active_idx) {
-                                if conv.kind == ConvKind::Group {
-                                    let group_id = conv.peer_id.strip_prefix("group:").unwrap_or(&conv.peer_id).to_string();
-                                    if self.db.add_member(&group_id, peer_id).is_ok() {
-                                        self.status = format!("Added {peer_id} to group");
+                            match self.db.group_members(parts[2]) {
+                                Ok(members) => {
+                                    if members.is_empty() {
+                                        self.status = "No members".into();
                                     } else {
-                                        self.status = "Failed to add member".into();
+                                        let names: Vec<String> = members.iter().map(|m| m.peer_id.clone()).collect();
+                                        self.status = format!("Members: {}", names.join(", "));
                                     }
-                                } else {
-                                    self.status = "Select a group conversation first".into();
                                 }
+                                Err(e) => self.status = format!("Failed: {e}"),
                             }
                         }
                     }
@@ -390,13 +562,11 @@ impl TuiApp {
                         if groups.is_empty() {
                             self.status = "No groups".into();
                         } else {
-                            let names: Vec<String> = groups.iter().map(|g| g.name.clone()).collect();
+                            let names: Vec<String> = groups.iter().map(|g| format!("{} ({})", g.name, g.id)).collect();
                             self.status = format!("Groups: {}", names.join(", "));
                         }
                     }
-                    _ => {
-                        self.status = "Unknown /group subcommand: create | add | list".into();
-                    }
+                    _ => self.status = "Usage: /groups create | members | list".into(),
                 }
                 true
             }
@@ -540,6 +710,11 @@ impl TuiApp {
         self.render_input(frame, chunks[1]);
         self.render_status(frame, chunks[2]);
 
+        // Cursor at end of input
+        let cursor_x = chunks[1].x + 2 + self.input.len() as u16;
+        let cursor_y = chunks[1].y + 1;
+        frame.set_cursor_position((cursor_x.min(chunks[1].right().saturating_sub(2)), cursor_y));
+
         if self.show_cmd_palette {
             self.render_cmd_palette(frame, chunks[1]);
         }
@@ -550,7 +725,7 @@ impl TuiApp {
         let palette_area = ratatui::layout::Rect {
             x: area.x + 1,
             y: area.y.saturating_sub(height).max(0),
-            width: 40.min(area.width.saturating_sub(2)),
+            width: 42.min(area.width.saturating_sub(2)),
             height,
         };
         let items: Vec<ListItem> = COMMANDS
@@ -831,7 +1006,7 @@ mod tests {
     fn mk_session(peer: &str) -> ChatSession {
         let (tx, _rx) = mpsc::channel(8);
         let (ev_tx, ev_rx) = mpsc::channel(8);
-        std::mem::forget(ev_tx); // keep receiver alive (no Disconnected)
+        std::mem::forget(ev_tx);
         ChatSession {
             peer_id: peer.to_string(),
             sender: tx,
@@ -889,7 +1064,6 @@ mod tests {
         app.send();
         assert!(app.input.is_empty());
 
-        // message should have been sent via session
         let sent = session_rx.try_recv().unwrap();
         assert_eq!(sent, Bytes::from("hey"));
     }
@@ -924,5 +1098,126 @@ mod tests {
         tx.try_send(session).unwrap();
         app.poll_network();
         assert_eq!(app.active_peer(), Some("frank"));
+    }
+
+    #[test]
+    fn help_command_lists_commands() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.input = "/help".into();
+        app.send();
+        assert!(app.status.starts_with("Commands:"), "status: {}", app.status);
+    }
+
+    #[test]
+    fn history_command_no_messages() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.input = "/history alice".into();
+        app.send();
+        assert_eq!(app.status, "No messages with alice");
+    }
+
+    #[test]
+    fn contacts_add_via_command() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.input = "/contacts add testpeer".into();
+        app.send();
+        assert_eq!(app.status, "Added contact testpeer");
+    }
+
+    #[test]
+    fn contacts_list_after_add() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.input = "/contacts add alice".into();
+        app.send();
+        app.input = "/contacts list".into();
+        app.send();
+        assert!(app.status.contains("alice"));
+    }
+
+    #[test]
+    fn contacts_remove_via_command() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.input = "/contacts add bob".into();
+        app.send();
+        app.input = "/contacts remove bob".into();
+        app.send();
+        assert_eq!(app.status, "Removed contact bob");
+    }
+
+    #[test]
+    fn history_shows_latest_message() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        let now = now_ms();
+
+        let msg = StoredMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: "dave".into(),
+            sender_peer_id: "dave".into(),
+            ciphertext: b"hello from dave".to_vec(),
+            signature: None,
+            frame_type: 1,
+            timestamp_unix_ms: now,
+            delivered: true,
+        };
+        MessageStore::store_message(&app.db, msg).unwrap();
+
+        app.input = "/history dave".into();
+        app.send();
+        assert!(app.status.contains("1 messages"));
+        assert!(app.status.contains("dave"));
+    }
+
+    #[test]
+    fn groups_create_via_command() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.input = "/groups create testgroup".into();
+        app.send();
+        assert!(app.status.contains("testgroup"));
+    }
+
+    #[test]
+    fn groups_list_empty() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.input = "/groups list".into();
+        app.send();
+        assert_eq!(app.status, "No groups");
+    }
+
+    #[test]
+    fn outbox_send_via_command() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.input = "/outbox send testpeer hello".into();
+        app.send();
+        assert_eq!(app.status, "Queued message for testpeer");
+    }
+
+    #[test]
+    fn outbox_list_after_send() {
+        let db = test_db();
+        let (_tx, rx) = mpsc::channel(8);
+        let mut app = TuiApp::new(db, rx);
+        app.input = "/outbox send p1 hi".into();
+        app.send();
+        app.input = "/outbox list".into();
+        app.send();
+        assert!(app.status.contains("1 pending"));
     }
 }

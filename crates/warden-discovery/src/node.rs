@@ -49,6 +49,7 @@ enum Command {
     GetListeningAddrs {
         tx: oneshot::Sender<Vec<Multiaddr>>,
     },
+    AddAnnounceAddr(Multiaddr),
 }
 
 struct EventLoop {
@@ -56,6 +57,7 @@ struct EventLoop {
     peer_id: PeerId,
     listening_addrs: Vec<Multiaddr>,
     relay_addrs: Vec<Multiaddr>,
+    extra_announce_addrs: Vec<Multiaddr>,
     pending_announces: HashMap<QueryId, oneshot::Sender<Result<(), DiscoveryError>>>,
     pending_resolves: HashMap<QueryId, oneshot::Sender<Result<Vec<Multiaddr>, DiscoveryError>>>,
     command_rx: mpsc::Receiver<Command>,
@@ -250,6 +252,7 @@ impl EventLoop {
             Command::Announce { tx } => {
                 let mut all_addrs = self.listening_addrs.clone();
                 all_addrs.extend(self.relay_addrs.clone());
+                all_addrs.extend(self.extra_announce_addrs.clone());
                 let addrs: Vec<String> = all_addrs.iter().map(|a| a.to_string()).collect();
                 let value = serde_json::to_vec(&addrs).unwrap_or_default();
                 let key = RecordKey::new(&self.peer_id.as_str().as_bytes());
@@ -301,6 +304,9 @@ impl EventLoop {
             }
             Command::GetListeningAddrs { tx } => {
                 let _ = tx.send(self.listening_addrs.clone());
+            }
+            Command::AddAnnounceAddr(addr) => {
+                self.extra_announce_addrs.push(addr);
             }
         }
     }
@@ -541,6 +547,7 @@ impl DiscoveryNode {
             peer_id: peer_id.clone(),
             listening_addrs: Vec::new(),
             relay_addrs: Vec::new(),
+            extra_announce_addrs: Vec::new(),
             pending_announces: HashMap::new(),
             pending_resolves: HashMap::new(),
             command_rx,
@@ -592,6 +599,13 @@ impl DiscoveryNode {
             .await
             .map_err(|_| DiscoveryError::Shutdown)?;
         rx.await.map_err(|_| DiscoveryError::Shutdown)?
+    }
+
+    pub async fn add_announce_addr(&self, addr: Multiaddr) -> Result<(), DiscoveryError> {
+        self.command_tx
+            .send(Command::AddAnnounceAddr(addr))
+            .await
+            .map_err(|_| DiscoveryError::Shutdown)
     }
 
     pub async fn listening_addrs(&self) -> Result<Vec<Multiaddr>, DiscoveryError> {
