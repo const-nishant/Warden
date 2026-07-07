@@ -54,11 +54,14 @@ enum Command {
         #[arg(long, default_value = "50")]
         limit: usize,
     },
-    /// Launch the terminal UI (TUI)
+    /// Launch the terminal UI (TUI) with built-in DHT node
     Tui {
         /// Port for SSH chat server
         #[arg(long, default_value = "2222")]
         port: u16,
+        /// Port for DHT listener (automatic if set)
+        #[arg(long = "dht-port", default_value = "3333")]
+        dht_port: u16,
         /// Bootstrap peer multiaddrs for DHT resolution (can be repeated)
         #[arg(long = "bootstrap", short)]
         bootstrap: Vec<String>,
@@ -845,15 +848,62 @@ async fn main() -> anyhow::Result<()> {
 
             let _ = server_task.await;
         }
-        Command::Tui { port, bootstrap, relay } => {
+        Command::Tui { port, dht_port, bootstrap, relay } => {
+            let keypair = warden_identity::IdentityKeypair::load(identity_path()?)?;
             let db = open_db()?;
+            let bootstrap_addrs = parse_multiaddrs(&bootstrap)?;
+            let relay_addrs = parse_multiaddrs(&relay)?;
+
+            // Start DHT node
+            let dht_listen: libp2p::Multiaddr =
+                format!("/ip4/0.0.0.0/tcp/{dht_port}").parse().unwrap();
+            let dht_node = warden_discovery::DiscoveryNode::new(
+                &keypair,
+                if bootstrap_addrs.is_empty() && relay_addrs.is_empty() && dht_port > 0 {
+                    vec![dht_listen]
+                } else {
+                    vec![dht_listen]
+                },
+            )
+            .await?;
+
+            for relay_addr in &relay_addrs {
+                println!("Connecting to relay {relay_addr}...");
+                let _ = dht_node.connect_relay(relay_addr.clone()).await;
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+
+            if !bootstrap_addrs.is_empty() {
+                println!("Bootstrapping DHT to {} peers...", bootstrap_addrs.len());
+                let _ = dht_node.bootstrap(bootstrap_addrs).await;
+                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                let _ = dht_node.retry_bootstrap().await;
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+
+            // Announce PeerID + SSH address on DHT
+            if let Ok(addrs) = dht_node.listening_addrs().await {
+                for a in &addrs {
+                    if let Some(sa) = multiaddr_to_socketaddr(a) {
+                        let ssh_ma: libp2p::Multiaddr =
+                            format!("/ip4/{}/tcp/{port}", sa.ip()).parse().unwrap();
+                        let _ = dht_node.add_announce_addr(ssh_ma).await;
+                        break;
+                    }
+                }
+            }
+            let _ = dht_node.announce().await;
+            println!("DHT node ready. PeerID: {}", keypair.peer_id());
+
+            // Start SSH server
             let (tx, rx) = mpsc::channel::<warden_transport::ChatSession>(64);
             let server_task = tokio::spawn(async move {
                 if let Err(e) = warden_transport::start_server("0.0.0.0", port, tx).await {
                     eprintln!("TUI server error: {e}");
                 }
             });
-            let mut app = warden_tui::TuiApp::new(db, rx, bootstrap, relay);
+
+            let mut app = warden_tui::TuiApp::new(db, rx, Some(dht_node), port);
             app.run().await?;
             server_task.abort();
         }
